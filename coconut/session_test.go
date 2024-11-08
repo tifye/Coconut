@@ -2,9 +2,11 @@ package coconut
 
 import (
 	"io"
+	"net"
 	"testing"
 
 	"github.com/charmbracelet/log"
+	tassert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
@@ -52,6 +54,23 @@ func Test_Session(t *testing.T) {
 
 		_, ok = server.sessions[seshKey]
 		require.True(t, ok, "session should exist in map")
+	})
+
+	t.Run("session closes underlying connection", func(t *testing.T) {
+		server, _, teardown := setup(t)
+		defer teardown()
+
+		seshKey, ok := pickSession(t, server.sessions)
+		require.True(t, ok, "should get session key")
+
+		session, ok := server.sessions[seshKey]
+		require.True(t, ok, "session should exist in map")
+
+		err := session.Close()
+		require.Nil(t, err, "should close without error")
+
+		err = session.conn.Close()
+		tassert.ErrorIs(t, err, net.ErrClosed, "should return conn already closed")
 	})
 }
 
