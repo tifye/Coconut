@@ -3,26 +3,44 @@ package coconut
 import (
 	"io"
 	"net"
+	"os"
 	"testing"
 
 	"github.com/charmbracelet/log"
 	tassert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tifye/Coconut/test"
+	"golang.org/x/crypto/ssh"
 )
 
 func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
+	signer, err := ssh.ParsePrivateKey(getBytes(t, "../testdata/mino"))
+	require.Nil(t, err)
+
+	addr := "127.0.0.1:9000"
 	server, err := NewServer(
 		log.New(io.Discard),
-		WithClientListenAddr(":9000"),
-		WithClientListenFunc(func(network, address string) (net.Listener, error) {
-			return test.NewMockNetListener("tcp", ":9000"), nil
-		}),
+		WithClientListenAddr(addr),
+		WithNoClientAuth(true),
+		WithHostKey(signer),
 	)
 	require.Nil(t, err, "server create err")
 
+	client, err := NewClient(
+		log.New(io.Discard),
+		addr,
+	)
+	require.Nil(t, err, "client create err")
+
 	err = server.Start()
 	require.Nil(t, err, "server start err")
+
+	err = client.Start()
+	require.Nil(t, err, "client start err")
+
+	defer func() {
+		err = client.Close()
+		require.Nil(t, err, "client close err")
+	}()
 
 	err = server.Close()
 	require.Nil(t, err, "server close err")
@@ -33,6 +51,10 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 
 	serverCloseErr := server.Close()
 	tassert.ErrorIs(t, serverCloseErr, ErrServerShutdown, "should return ErrServerShutdown after calling close again")
+
+	for _, sesh := range server.sessions {
+		tassert.True(t, sesh.closed.Load(), "session should be closed")
+	}
 }
 
 func Test_ServerAcceptsConns(t *testing.T) {
@@ -56,4 +78,11 @@ func Test_ServerAcceptsConns(t *testing.T) {
 
 	err = conn.Close()
 	tassert.Nil(t, err, "conn close err")
+}
+
+func getBytes(tb testing.TB, path string) []byte {
+	tb.Helper()
+	bts, err := os.ReadFile(path)
+	require.Nil(tb, err)
+	return bts
 }

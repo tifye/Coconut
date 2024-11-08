@@ -9,11 +9,18 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 	"github.com/tifye/Coconut/coconut"
+	"golang.org/x/crypto/ssh"
 )
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Printf("failed to read env files: %s\n", err)
+	}
+
 	logger := log.NewWithOptions(os.Stdout, log.Options{
 		Level:           log.DebugLevel,
 		TimeFormat:      "15:04:05",
@@ -24,7 +31,7 @@ func main() {
 	defer cancel()
 
 	cmd := newServerCommand(logger)
-	err := cmd.ExecuteContext(ctx)
+	err = cmd.ExecuteContext(ctx)
 	if errors.Is(err, context.Canceled) {
 		logger.Info("command exited via context cancellation")
 		return
@@ -54,9 +61,16 @@ func newServerCommand(logger *log.Logger) *cobra.Command {
 }
 
 func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
+	signer, err := ssh.ParsePrivateKey(getBytes(os.Getenv("HOST_KEY")))
+	if err != nil {
+		return err
+	}
+
 	server, err := coconut.NewServer(
 		logger.WithPrefix("server"),
 		coconut.WithClientListenAddr(opts.ClientListenAddr),
+		coconut.WithHostKey(signer),
+		coconut.WithNoClientAuth(true),
 	)
 	if err != nil {
 		return fmt.Errorf("server create: %s", err)
@@ -88,4 +102,12 @@ func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
 			return fmt.Errorf("server shutdown: %w", err)
 		}
 	}
+}
+
+func getBytes(path string) []byte {
+	bts, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	return bts
 }

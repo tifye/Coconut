@@ -1,6 +1,8 @@
 package coconut
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/tifye/Coconut/assert"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -17,44 +20,88 @@ var (
 )
 
 type serverOptions struct {
-	sshSigner        ssh.Signer
-	clientListenAddr string
-	clientListenFunc ListenFunc
+	SSHSigner               ssh.Signer
+	clientListenAddr        string
+	clientListenFunc        ListenFunc
+	publicKeyAuthAlgorithms []string
+	publicKeyCallback       PublicKeyCallback
+	noClientAuth            bool
 }
 
 type ServerOption func(options *serverOptions) error
 
-func WithSigner(signer ssh.Signer) ServerOption {
-	assert.Assert(signer != nil, "nil signer")
+func WithHostKey(signer ssh.Signer) ServerOption {
 	return func(options *serverOptions) error {
-		options.sshSigner = signer
+		if signer == nil {
+			return errors.New("nil signer")
+		}
+		options.SSHSigner = signer
+		return nil
+	}
+}
+
+func WithNoClientAuth(noAuth bool) ServerOption {
+	return func(options *serverOptions) error {
+		options.noClientAuth = noAuth
+		return nil
+	}
+}
+
+func WithServerPublicKeyAlgorithms(algs []string) ServerOption {
+	return func(options *serverOptions) error {
+		if len(algs) <= 0 {
+			return errors.New("invalid slice of aglorithms")
+		}
+		options.publicKeyAuthAlgorithms = algs
+		return nil
+	}
+}
+
+type PublicKeyCallback func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error)
+
+func WithPublicKeyCallback(cb PublicKeyCallback) ServerOption {
+	return func(options *serverOptions) error {
+		if cb == nil {
+			return errors.New("nil public key callback")
+		}
+		options.publicKeyCallback = cb
 		return nil
 	}
 }
 
 func WithClientListenAddr(addr string) ServerOption {
-	assert.Assert(addr != "", "zero value address")
 	return func(options *serverOptions) error {
+		if addr == "" {
+			return errors.New("empty address")
+		}
 		options.clientListenAddr = addr
 		return nil
 	}
 }
 
 func WithClientListenFunc(f ListenFunc) ServerOption {
-	assert.Assert(f != nil, "nil client listen func")
 	return func(options *serverOptions) error {
+		if f == nil {
+			return errors.New("nil client listen func")
+		}
 		options.clientListenFunc = f
 		return nil
 	}
 }
 
 type Server struct {
+	logger *log.Logger
+
+	mu         sync.Mutex
+	inShutdown atomic.Bool
+
 	clAddr       string
 	clListenFunc ListenFunc
 	clListener   net.Listener
-	mu           sync.Mutex
-	inShutdown   atomic.Bool
-	logger       *log.Logger
+
+	sshConfig *ssh.ServerConfig
+
+	sessions map[string]*session
 }
 
 func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
@@ -68,6 +115,37 @@ func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
 		}
 	}
 
+	err := serverDefaults(logger, &opts)
+	if err != nil {
+		return nil, err
+	}
+
+	assert.Assert(opts.clientListenAddr != "", "zero value client listen address")
+	assert.Assert(opts.clientListenFunc != nil, "nil client listen func")
+	assert.Assert(opts.publicKeyCallback != nil, "nil public key callback")
+	assert.Assert(len(opts.publicKeyAuthAlgorithms) > 0, "invalid public key auth algorithms")
+	assert.Assert(opts.SSHSigner != nil, "nil signer")
+
+	sshConfig := ssh.ServerConfig{
+		NoClientAuth:            opts.noClientAuth,
+		PublicKeyAuthAlgorithms: opts.publicKeyAuthAlgorithms,
+		PublicKeyCallback:       opts.publicKeyCallback,
+		AuthLogCallback:         authLogCallback(logger),
+	}
+	sshConfig.AddHostKey(opts.SSHSigner)
+
+	return &Server{
+		logger:       logger,
+		mu:           sync.Mutex{},
+		inShutdown:   atomic.Bool{},
+		clAddr:       opts.clientListenAddr,
+		clListenFunc: opts.clientListenFunc,
+		sshConfig:    &sshConfig,
+		sessions:     make(map[string]*session),
+	}, nil
+}
+
+func serverDefaults(logger *log.Logger, opts *serverOptions) error {
 	if opts.clientListenAddr == "" {
 		opts.clientListenAddr = ":9000"
 	}
@@ -76,13 +154,65 @@ func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
 		opts.clientListenFunc = DefaultListen
 	}
 
-	return &Server{
-		mu:           sync.Mutex{},
-		inShutdown:   atomic.Bool{},
-		logger:       logger,
-		clAddr:       opts.clientListenAddr,
-		clListenFunc: opts.clientListenFunc,
-	}, nil
+	if opts.publicKeyCallback == nil {
+		opts.publicKeyCallback = publicKeyCallback(logger)
+	}
+
+	if opts.publicKeyAuthAlgorithms == nil {
+		opts.publicKeyAuthAlgorithms = []string{
+			ssh.KeyAlgoED25519,
+			ssh.KeyAlgoSKED25519, ssh.KeyAlgoSKECDSA256,
+			ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521,
+			ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSA,
+			ssh.KeyAlgoDSA,
+		}
+	}
+
+	if opts.SSHSigner == nil {
+		key, err := rsa.GenerateKey(rand.Reader, 256)
+		if err != nil {
+			return err
+		}
+
+		signer, err := ssh.NewSignerFromKey(key)
+		if err != nil {
+			return err
+		}
+
+		opts.SSHSigner = signer
+	}
+
+	assert.Assert(opts.clientListenAddr != "", "zero value client listen address")
+	assert.Assert(opts.clientListenFunc != nil, "nil client listen func")
+	assert.Assert(opts.publicKeyCallback != nil, "nil public key callback")
+	assert.Assert(len(opts.publicKeyAuthAlgorithms) > 0, "invalid public key auth algorithms")
+	assert.Assert(opts.SSHSigner != nil, "nil signer")
+	return nil
+}
+
+func publicKeyCallback(logger *log.Logger) PublicKeyCallback {
+	assert.Assert(logger != nil, "nil logger")
+	return func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+		logger.Debug("public key callback", "seshId", conn.SessionID(), "user", conn.User(), "keyType", key.Type(), "raddr", conn.RemoteAddr())
+		return nil, nil
+	}
+}
+
+func authLogCallback(logger *log.Logger) func(conn ssh.ConnMetadata, method string, err error) {
+	assert.Assert(logger != nil, "nil logger")
+	return func(conn ssh.ConnMetadata, method string, err error) {
+		if err != nil {
+			if errors.Is(err, ssh.ErrNoAuth) {
+				logger.Debug("auth log callback but auth has yet to be passed")
+				return
+			}
+
+			logger.Error("failed auth attempt", "method", method, "raddr", conn.RemoteAddr(), "err", err)
+			return
+		}
+
+		logger.Info("auth passed", "method", method, "raddr", conn.RemoteAddr())
+	}
 }
 
 // ListenFunc is a function used to create a net.Listener
@@ -99,9 +229,10 @@ func (s *Server) Start() error {
 		return fmt.Errorf("client ListenFunc: %w", err)
 	}
 	s.clListener = ln
+	assert.Assert(ln != nil, "nil client listener")
 	s.logger.Debug("client listener started", "addr", s.clAddr)
 
-	assert.Assert(ln != nil, "nil client listener")
+	go s.processClients()
 
 	return nil
 }
@@ -117,5 +248,48 @@ func (s *Server) Close() error {
 	s.inShutdown.Store(true)
 
 	assert.Assert(s.clListener != nil, "nil client listener")
-	return s.clListener.Close()
+
+	eg := errgroup.Group{}
+	eg.Go(s.clListener.Close)
+	for _, sesh := range s.sessions {
+		eg.Go(sesh.Close)
+	}
+
+	return eg.Wait()
+}
+
+func (s *Server) processClients() {
+	assert.Assert(s.clListener != nil, "nil client listener")
+	assert.Assert(s.sshConfig != nil, "nil ssh client config")
+	for {
+		conn, err := s.clListener.Accept()
+		if err != nil {
+			if s.inShutdown.Load() {
+				s.logger.Debug("server in shutdown, no longer accepting clients")
+				return
+			}
+			s.logger.Error("failed to accept network conn", "err", err)
+			return
+		}
+		s.logger.Debug("accepted net conn", "raddr", conn.RemoteAddr(), "laddr", conn.LocalAddr())
+
+		sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.sshConfig)
+		if err != nil {
+			s.logger.Error("ssh handsake failed", "err", err)
+			continue
+		}
+
+		sesh, err := newSession(conn, sshConn, chans, reqs)
+		if err != nil {
+			s.logger.Error("failed to create new sesson", "err", err)
+			continue
+		}
+		assert.Assert(sesh != nil, "nil session")
+
+		s.mu.Lock()
+		s.sessions[string(sshConn.SessionID())] = sesh
+		s.mu.Unlock()
+
+		go sesh.Start()
+	}
 }

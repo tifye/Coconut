@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 	"github.com/tifye/Coconut/coconut"
+	"golang.org/x/crypto/ssh"
 )
 
 func main() {
@@ -22,10 +24,14 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	cmd := newServerCommand(logger)
+	cmd := newClientCommand(logger)
 	err := cmd.ExecuteContext(ctx)
+	if errors.Is(err, context.Canceled) {
+		logger.Info("command exited via context cancellation")
+		return
+	}
 	if err != nil {
-		logger.Error("error executing server command", "err", err)
+		logger.Error("error executing client command", "err", err)
 	}
 }
 
@@ -33,10 +39,11 @@ type ClientOpts struct {
 	ServerAddr string
 }
 
-func newServerCommand(logger *log.Logger) *cobra.Command {
+func newClientCommand(logger *log.Logger) *cobra.Command {
 	opts := ClientOpts{}
 	cmd := &cobra.Command{
-		Use: "coconut",
+		Use:          "coconut",
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runClient(cmd.Context(), logger, opts)
 		},
@@ -48,7 +55,12 @@ func newServerCommand(logger *log.Logger) *cobra.Command {
 }
 
 func runClient(ctx context.Context, logger *log.Logger, opts ClientOpts) error {
-	client, err := coconut.NewClient(logger.WithPrefix("client"), opts.ServerAddr)
+	client, err := coconut.NewClient(
+		logger.WithPrefix("client"),
+		opts.ServerAddr,
+		coconut.WithHostKeyCallback(ssh.InsecureIgnoreHostKey()),
+		coconut.WithUser("tifye"),
+	)
 	if err != nil {
 		return fmt.Errorf("client create: %s", err)
 	}

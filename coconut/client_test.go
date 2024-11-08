@@ -8,19 +8,32 @@ import (
 	"github.com/charmbracelet/log"
 	tassert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tifye/Coconut/test"
+	"golang.org/x/crypto/ssh"
 )
 
 func Test_ClientClosesUnderlyNetworkIO(t *testing.T) {
-	addr := ":9000"
-	client, err := NewClient(
+	signer, err := ssh.ParsePrivateKey(getBytes(t, "../testdata/mino"))
+	require.Nil(t, err)
+
+	addr := "127.0.0.1:9000"
+	server, err := NewServer(
 		log.New(io.Discard),
-		addr,
-		WithDialFunc(func(network, address string) (net.Conn, error) {
-			return test.NewMockNetConn(network, address), nil
-		}),
+		WithClientListenAddr(addr),
+		WithNoClientAuth(true),
+		WithHostKey(signer),
 	)
+	require.Nil(t, err, "server create err")
+
+	client, err := NewClient(log.New(io.Discard), addr)
 	require.Nil(t, err, "client create err")
+
+	err = server.Start()
+	require.Nil(t, err, "server start err")
+
+	defer func() {
+		err := server.Close()
+		require.Nil(t, err, "server close err")
+	}()
 
 	err = client.Start()
 	require.Nil(t, err, "client start err")
@@ -37,10 +50,15 @@ func Test_ClientClosesUnderlyNetworkIO(t *testing.T) {
 }
 
 func Test_ClientOpensConnToServer(t *testing.T) {
+	signer, err := ssh.ParsePrivateKey(getBytes(t, "../testdata/mino"))
+	require.Nil(t, err)
+
 	addr := "127.0.0.1:9000"
 	server, err := NewServer(
 		log.New(io.Discard),
 		WithClientListenAddr(addr),
+		WithNoClientAuth(true),
+		WithHostKey(signer),
 	)
 	require.Nil(t, err, "server create err")
 
