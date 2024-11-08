@@ -54,11 +54,15 @@ func newServerCommand(logger *log.Logger) *cobra.Command {
 }
 
 func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
-	config := coconut.ServerConfig{
-		ClientListenAddr: opts.ClientListenAddr,
+	server, err := coconut.NewServer(
+		logger.WithPrefix("server"),
+		coconut.WithClientListenAddr(opts.ClientListenAddr),
+	)
+	if err != nil {
+		return fmt.Errorf("server create: %s", err)
 	}
-	server := coconut.NewServer(&config, logger.WithPrefix("server"))
-	err := server.Start()
+
+	err = server.Start()
 	if err != nil {
 		return fmt.Errorf("server start: %s", err)
 	}

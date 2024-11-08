@@ -48,11 +48,12 @@ func newServerCommand(logger *log.Logger) *cobra.Command {
 }
 
 func runClient(ctx context.Context, logger *log.Logger, opts ClientOpts) error {
-	config := coconut.ClientConfig{
-		ServerAddr: opts.ServerAddr,
+	client, err := coconut.NewClient(logger.WithPrefix("client"), opts.ServerAddr)
+	if err != nil {
+		return fmt.Errorf("client create: %s", err)
 	}
-	client := coconut.NewClient(config, logger.WithPrefix("server"))
-	err := client.Start()
+
+	err = client.Start()
 	if err != nil {
 		return fmt.Errorf("client start: %s", err)
 	}

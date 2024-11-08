@@ -12,15 +12,16 @@ import (
 )
 
 func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
-	serverConfig := ServerConfig{
-		ClientListenAddr: ":9000",
-		ClientListenFunc: func(network, address string) (net.Listener, error) {
+	server, err := NewServer(
+		log.New(io.Discard),
+		WithClientListenAddr(":9000"),
+		WithClientListenFunc(func(network, address string) (net.Listener, error) {
 			return test.NewMockNetListener("tcp", ":9000"), nil
-		},
-	}
-	server := NewServer(&serverConfig, log.New(io.Discard))
+		}),
+	)
+	require.Nil(t, err, "server create err")
 
-	err := server.Start()
+	err = server.Start()
 	require.Nil(t, err, "server start err")
 
 	err = server.Close()
@@ -36,12 +37,13 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 
 func Test_ServerAcceptsConns(t *testing.T) {
 	addr := "127.0.0.1:9000"
-	serverConfig := ServerConfig{
-		ClientListenAddr: addr,
-	}
-	server := NewServer(&serverConfig, log.New(io.Discard))
+	server, err := NewServer(
+		log.New(io.Discard),
+		WithClientListenAddr(addr),
+	)
+	require.Nil(t, err, "server create err")
 
-	err := server.Start()
+	err = server.Start()
 	require.Nil(t, err, "server start err")
 
 	defer func() {

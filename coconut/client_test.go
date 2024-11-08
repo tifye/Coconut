@@ -13,15 +13,16 @@ import (
 
 func Test_ClientClosesUnderlyNetworkIO(t *testing.T) {
 	addr := ":9000"
-	clientConfig := ClientConfig{
-		ServerAddr: addr,
-		DialFunc: func(network, address string) (net.Conn, error) {
+	client, err := NewClient(
+		log.New(io.Discard),
+		addr,
+		WithDialFunc(func(network, address string) (net.Conn, error) {
 			return test.NewMockNetConn(network, address), nil
-		},
-	}
-	client := NewClient(clientConfig, log.New(io.Discard))
+		}),
+	)
+	require.Nil(t, err, "client create err")
 
-	err := client.Start()
+	err = client.Start()
 	require.Nil(t, err, "client start err")
 
 	err = client.Close()
@@ -37,17 +38,16 @@ func Test_ClientClosesUnderlyNetworkIO(t *testing.T) {
 
 func Test_ClientOpensConnToServer(t *testing.T) {
 	addr := "127.0.0.1:9000"
-	serverConfig := ServerConfig{
-		ClientListenAddr: addr,
-	}
-	server := NewServer(&serverConfig, log.New(io.Discard))
+	server, err := NewServer(
+		log.New(io.Discard),
+		WithClientListenAddr(addr),
+	)
+	require.Nil(t, err, "server create err")
 
-	clientConfig := ClientConfig{
-		ServerAddr: addr,
-	}
-	client := NewClient(clientConfig, log.New(io.Discard))
+	client, err := NewClient(log.New(io.Discard), addr)
+	require.Nil(t, err, "client create err")
 
-	err := server.Start()
+	err = server.Start()
 	require.Nil(t, err, "server start err")
 
 	defer func() {
@@ -66,11 +66,9 @@ func Test_ClientOpensConnToServer(t *testing.T) {
 
 func Test_ClientErrsOnStartWithNoServer(t *testing.T) {
 	addr := "127.0.0.1:9000"
-	clientConfig := ClientConfig{
-		ServerAddr: addr,
-	}
-	client := NewClient(clientConfig, log.New(io.Discard))
+	client, err := NewClient(log.New(io.Discard), addr)
+	require.Nil(t, err, "client create err")
 
-	err := client.Start()
+	err = client.Start()
 	require.NotNil(t, err, "client should err")
 }

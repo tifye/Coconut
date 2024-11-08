@@ -15,9 +15,27 @@ var (
 	ErrClientShutdown = errors.New("client closed")
 )
 
-type ClientConfig struct {
-	ServerAddr string
-	DialFunc   DialFunc
+type clientOptions struct {
+	serverAddr string
+	dialFunc   DialFunc
+}
+
+type ClientOption func(options *clientOptions) error
+
+func WithServerAddr(addr string) ClientOption {
+	assert.Assert(addr != "", "zero value address")
+	return func(options *clientOptions) error {
+		options.serverAddr = addr
+		return nil
+	}
+}
+
+func WithDialFunc(f DialFunc) ClientOption {
+	assert.Assert(f != nil, "nil dial func")
+	return func(options *clientOptions) error {
+		options.dialFunc = f
+		return nil
+	}
 }
 
 type Client struct {
@@ -29,18 +47,30 @@ type Client struct {
 	inShutdown atomic.Bool
 }
 
-func NewClient(config ClientConfig, logger *log.Logger) *Client {
-	if config.DialFunc == nil {
-		config.DialFunc = DefaultDialFunc
+func NewClient(logger *log.Logger, serverAddr string, options ...ClientOption) (*Client, error) {
+	assert.Assert(serverAddr != "", "zero value server address")
+	assert.Assert(logger != nil, "nil logger")
+
+	var opts clientOptions
+	for _, f := range options {
+		err := f(&opts)
+		if err != nil {
+			return nil, err
+		}
 	}
 
+	if opts.dialFunc == nil {
+		opts.dialFunc = DefaultDialFunc
+	}
+	assert.Assert(opts.dialFunc != nil, "nil dial func")
+
 	return &Client{
-		srvAddr:    config.ServerAddr,
-		dialFunc:   config.DialFunc,
+		srvAddr:    serverAddr,
+		dialFunc:   opts.dialFunc,
 		logger:     logger,
 		mu:         sync.Mutex{},
 		inShutdown: atomic.Bool{},
-	}
+	}, nil
 }
 
 // DialFunc is a function use to open a network connection
