@@ -1,0 +1,10 @@
+version: '3'
+
+tasks:
+    test:
+        - go test ./...
+        
+    test-race:
+        desc: test for data races
+        cmds: 
+        - go test -race ./...
