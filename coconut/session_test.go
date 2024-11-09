@@ -72,6 +72,23 @@ func Test_Session(t *testing.T) {
 		err = session.conn.Close()
 		tassert.ErrorIs(t, err, net.ErrClosed, "should return conn already closed")
 	})
+
+	t.Run("at least one tunnel created", func(t *testing.T) {
+		server, _, teardown := setup(t)
+		defer teardown()
+
+		seshKey, ok := pickSession(t, server.sessions)
+		require.True(t, ok, "should get session key")
+
+		session, ok := server.sessions[seshKey]
+		require.True(t, ok, "session should exist in map")
+		defer func() {
+			err := session.Close()
+			require.Nil(t, err, "should close without error")
+		}()
+
+		tassert.True(t, len(session.tunnels) > 0, "at least one tunnel should be created")
+	})
 }
 
 func pickSession(t testing.TB, sessions map[string]*session) (string, bool) {

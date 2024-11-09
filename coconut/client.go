@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/tifye/Coconut/assert"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -74,9 +75,11 @@ type Client struct {
 
 	mu         sync.Mutex
 	inShutdown atomic.Bool
+	closeWg    *sync.WaitGroup
 
 	sshConfig *ssh.ClientConfig
 	sshConn   ssh.Conn
+	tunnels   []*tunnel
 }
 
 func NewClient(logger *log.Logger, serverAddr string, options ...ClientOption) (*Client, error) {
@@ -105,12 +108,14 @@ func NewClient(logger *log.Logger, serverAddr string, options ...ClientOption) (
 	}
 
 	return &Client{
+		logger:     logger,
 		srvAddr:    serverAddr,
 		dialFunc:   opts.dialFunc,
-		logger:     logger,
+		sshConfig:  sshConfig,
 		mu:         sync.Mutex{},
 		inShutdown: atomic.Bool{},
-		sshConfig:  sshConfig,
+		closeWg:    &sync.WaitGroup{},
+		tunnels:    make([]*tunnel, 0),
 	}, nil
 }
 
@@ -161,31 +166,92 @@ func (c *Client) Start() error {
 	}
 	c.sshConn = sshConn
 
-	go ssh.DiscardRequests(reqs)
+	assert.Assert(c.closeWg != nil, "nil wait group")
+	c.closeWg.Add(2)
 	go func() {
-		for nc := range chans {
-			nc.Reject(ssh.UnknownChannelType, "not implemented")
-		}
+		defer c.closeWg.Done()
+		ssh.DiscardRequests(reqs)
+	}()
+	go func() {
+		defer c.closeWg.Done()
+		c.processNewChannels(chans)
 	}()
 
 	assert.Assert(c.sshConn != nil, "nil ssh conn")
 	return nil
 }
 
-func (c *Client) Close() error {
+func (c *Client) Close() (rerr error) {
 	if c.inShutdown.Load() {
 		return ErrClientShutdown
 	}
 
+	c.inShutdown.Store(true)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.inShutdown.Store(true)
-
+	assert.Assert(c.closeWg != nil, "nil wait group")
+	assert.Assert(c.tunnels != nil, "nil tunnels")
 	assert.Assert(c.sshConn != nil, "nil network conn")
-	err := c.sshConn.Close()
-	if errors.Is(err, net.ErrClosed) {
-		return nil
+
+	defer c.closeWg.Wait()
+	defer func() {
+		c.logger.Debug("closing ssh connection")
+		err := c.sshConn.Close()
+		if errors.Is(err, net.ErrClosed) || err == nil {
+			return
+		}
+		if rerr == nil {
+			rerr = err
+		} else {
+			rerr = errors.Join(rerr, err)
+		}
+	}()
+
+	teg := errgroup.Group{}
+	for _, t := range c.tunnels {
+		teg.Go(t.Close)
 	}
-	return err
+	return teg.Wait()
+}
+
+func (c *Client) processNewChannels(chans <-chan ssh.NewChannel) {
+	assert.Assert(chans != nil, "nil channel")
+	for nc := range chans {
+		if nc.ChannelType() != "tunnel" {
+			c.logger.Debug("non-tunnel type new channel request")
+
+			err := nc.Reject(ssh.UnknownChannelType, "only accepts tunnel type channels")
+			if err != nil {
+				c.logger.Error("err rejecting new channel request", "err", err)
+			}
+
+			return
+		}
+
+		sshChan, reqs, err := nc.Accept()
+		if err != nil {
+			c.logger.Error("err accepting new channel request", "err", err)
+			return
+		}
+		assert.Assert(sshChan != nil, "nil ssh channel")
+		assert.Assert(reqs != nil, "nil channel")
+		tunnel := &tunnel{
+			sshChan: sshChan,
+			reqs:    reqs,
+		}
+
+		// todo: .Close goroutine Locks mutex which blocks this goroutine
+		// todo: but .Close waits for this to finish
+		// todo: fix this
+		if c.inShutdown.Load() {
+			return
+		}
+
+		assert.Assert(c.tunnels != nil, "nil tunnels")
+		c.mu.Lock()
+		c.tunnels = append(c.tunnels, tunnel)
+		c.mu.Unlock()
+	}
 }

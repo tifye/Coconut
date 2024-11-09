@@ -290,6 +290,9 @@ func (s *Server) processClients() {
 		s.sessions[string(sshConn.SessionID())] = sesh
 		s.mu.Unlock()
 
-		go sesh.Start()
+		err = sesh.Start()
+		if err != nil {
+			s.logger.Error("failed to start session", "err", err)
+		}
 	}
 }
