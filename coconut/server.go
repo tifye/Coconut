@@ -40,9 +40,9 @@ func WithHostKey(signer ssh.Signer) ServerOption {
 	}
 }
 
-func WithNoClientAuth(noAuth bool) ServerOption {
+func WithNoClientAuth() ServerOption {
 	return func(options *serverOptions) error {
-		options.noClientAuth = noAuth
+		options.noClientAuth = true
 		return nil
 	}
 }

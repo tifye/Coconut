@@ -188,9 +188,6 @@ func (c *Client) Close() (rerr error) {
 
 	c.inShutdown.Store(true)
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	assert.Assert(c.closeWg != nil, "nil wait group")
 	assert.Assert(c.tunnels != nil, "nil tunnels")
 	assert.Assert(c.sshConn != nil, "nil network conn")
@@ -209,10 +206,13 @@ func (c *Client) Close() (rerr error) {
 		}
 	}()
 
+	c.mu.Lock()
 	teg := errgroup.Group{}
 	for _, t := range c.tunnels {
 		teg.Go(t.Close)
 	}
+	c.mu.Unlock()
+
 	return teg.Wait()
 }
 
@@ -240,13 +240,6 @@ func (c *Client) processNewChannels(chans <-chan ssh.NewChannel) {
 		tunnel := &tunnel{
 			sshChan: sshChan,
 			reqs:    reqs,
-		}
-
-		// todo: .Close goroutine Locks mutex which blocks this goroutine
-		// todo: but .Close waits for this to finish
-		// todo: fix this
-		if c.inShutdown.Load() {
-			return
 		}
 
 		assert.Assert(c.tunnels != nil, "nil tunnels")

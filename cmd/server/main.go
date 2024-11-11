@@ -70,7 +70,7 @@ func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
 		logger.WithPrefix("server"),
 		coconut.WithClientListenAddr(opts.ClientListenAddr),
 		coconut.WithHostKey(signer),
-		coconut.WithNoClientAuth(true),
+		coconut.WithNoClientAuth(),
 	)
 	if err != nil {
 		return fmt.Errorf("server create: %s", err)

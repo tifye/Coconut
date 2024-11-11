@@ -14,87 +14,93 @@ import (
 func Test_Session(t *testing.T) {
 	signer, err := ssh.ParsePrivateKey(getBytes(t, "../testdata/mino"))
 	require.Nil(t, err)
+	setup := func(t *testing.T) (*Client, *session, func()) {
+		sshConfig := ssh.ServerConfig{NoClientAuth: true}
+		sshConfig.AddHostKey(signer)
 
-	setup := func(t *testing.T) (*Server, *Client, func()) {
-		addr := "127.0.0.1:9000"
-		server, err := NewServer(
-			log.New(io.Discard),
-			WithClientListenAddr(addr),
-			WithNoClientAuth(true),
-			WithHostKey(signer),
-		)
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		require.Nil(t, err)
 
-		client, err := NewClient(
-			log.New(io.Discard),
-			addr,
-		)
+		client, err := NewClient(log.New(io.Discard), ln.Addr().String())
 		require.Nil(t, err)
 
-		err = server.Start()
+		clientReady := make(chan struct{})
+		go func() {
+			err = client.Start()
+			require.Nil(t, err)
+			clientReady <- struct{}{}
+		}()
+
+		conn, err := ln.Accept()
 		require.Nil(t, err)
 
-		err = client.Start()
+		sshConn, chans, reqs, err := ssh.NewServerConn(conn, &sshConfig)
 		require.Nil(t, err)
-		return server, client, func() {
-			cerr := client.Close()
-			serr := server.Close()
 
-			require.Nil(t, cerr)
+		session, err := newSession(conn, sshConn, chans, reqs)
+		require.Nil(t, err)
+
+		<-clientReady
+
+		return client, session, func() {
+			serr := session.Close()
 			require.Nil(t, serr)
+
+			cerr := client.Close()
+			require.Nil(t, cerr)
 		}
 	}
 
-	t.Run("session create after client conneciton", func(t *testing.T) {
-		server, _, teardown := setup(t)
+	t.Run("nothing should happen", func(t *testing.T) {
+		_, _, teardown := setup(t)
+		defer teardown()
+	})
+
+	t.Run("session started and tunnel created", func(t *testing.T) {
+		_, session, teardown := setup(t)
 		defer teardown()
 
-		seshKey, ok := pickSession(t, server.sessions)
-		require.True(t, ok, "should get session key")
+		err := session.Start()
+		require.Nil(t, err)
 
-		_, ok = server.sessions[seshKey]
-		require.True(t, ok, "session should exist in map")
+		tassert.True(t, len(session.tunnels) > 0, "at least one tunnel created")
 	})
 
 	t.Run("session closes underlying connection", func(t *testing.T) {
-		server, _, teardown := setup(t)
+		_, session, teardown := setup(t)
 		defer teardown()
 
-		seshKey, ok := pickSession(t, server.sessions)
-		require.True(t, ok, "should get session key")
+		err := session.Start()
+		require.Nil(t, err)
 
-		session, ok := server.sessions[seshKey]
-		require.True(t, ok, "session should exist in map")
-
-		err := session.Close()
+		err = session.Close()
 		require.Nil(t, err, "should close without error")
 
 		err = session.conn.Close()
 		tassert.ErrorIs(t, err, net.ErrClosed, "should return conn already closed")
 	})
 
-	t.Run("at least one tunnel created", func(t *testing.T) {
-		server, _, teardown := setup(t)
+	t.Run("close before start should not error", func(t *testing.T) {
+		_, session, teardown := setup(t)
 		defer teardown()
 
-		seshKey, ok := pickSession(t, server.sessions)
-		require.True(t, ok, "should get session key")
+		err = session.Close()
+		require.Nil(t, err, "should close without error")
 
-		session, ok := server.sessions[seshKey]
-		require.True(t, ok, "session should exist in map")
-		defer func() {
-			err := session.Close()
-			require.Nil(t, err, "should close without error")
-		}()
-
-		tassert.True(t, len(session.tunnels) > 0, "at least one tunnel should be created")
+		err = session.conn.Close()
+		tassert.ErrorIs(t, err, net.ErrClosed, "should return conn already closed")
 	})
-}
 
-func pickSession(t testing.TB, sessions map[string]*session) (string, bool) {
-	t.Helper()
-	for k := range sessions {
-		return k, true
-	}
-	return "", false
+	t.Run("client close before session", func(t *testing.T) {
+		client, session, _ := setup(t)
+
+		err := session.Start()
+		require.Nil(t, err)
+
+		err = client.Close()
+		require.Nil(t, err)
+
+		err = session.Close()
+		require.Nil(t, err)
+	})
 }

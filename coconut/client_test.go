@@ -19,7 +19,7 @@ func Test_ClientClosesUnderlyNetworkIO(t *testing.T) {
 	server, err := NewServer(
 		log.New(io.Discard),
 		WithClientListenAddr(addr),
-		WithNoClientAuth(true),
+		WithNoClientAuth(),
 		WithHostKey(signer),
 	)
 	require.Nil(t, err, "server create err")
@@ -57,7 +57,7 @@ func Test_ClientOpensConnToServer(t *testing.T) {
 	server, err := NewServer(
 		log.New(io.Discard),
 		WithClientListenAddr(addr),
-		WithNoClientAuth(true),
+		WithNoClientAuth(),
 		WithHostKey(signer),
 	)
 	require.Nil(t, err, "server create err")
