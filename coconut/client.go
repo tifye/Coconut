@@ -188,6 +188,7 @@ func (c *Client) Close() (rerr error) {
 
 	c.inShutdown.Store(true)
 
+	c.mu.Lock()
 	assert.Assert(c.closeWg != nil, "nil wait group")
 	assert.Assert(c.tunnels != nil, "nil tunnels")
 	assert.Assert(c.sshConn != nil, "nil network conn")
@@ -206,7 +207,6 @@ func (c *Client) Close() (rerr error) {
 		}
 	}()
 
-	c.mu.Lock()
 	teg := errgroup.Group{}
 	for _, t := range c.tunnels {
 		teg.Go(t.Close)

@@ -18,8 +18,8 @@ type sessionSSHConn interface {
 	OpenChannel(name string, data []byte) (ssh.Channel, <-chan *ssh.Request, error)
 }
 
-// session represents a clients entire connection with the server
-type session struct {
+// Session represents a clients entire connection with the server
+type Session struct {
 	conn    net.Conn
 	sshConn sessionSSHConn
 
@@ -38,13 +38,13 @@ func newSession(
 	sshConn sessionSSHConn,
 	newChans <-chan ssh.NewChannel,
 	reqs <-chan *ssh.Request,
-) (*session, error) {
+) (*Session, error) {
 	assert.Assert(conn != nil, "nil net conn")
 	assert.Assert(sshConn != nil, "nil ssh conn")
 	assert.Assert(newChans != nil, "nil new channels channel")
 	assert.Assert(reqs != nil, "nil reqs channel")
 
-	return &session{
+	return &Session{
 		conn:     conn,
 		sshConn:  sshConn,
 		newChans: newChans,
@@ -56,7 +56,7 @@ func newSession(
 	}, nil
 }
 
-func (s *session) Start() error {
+func (s *Session) Start() error {
 	assert.Assert(s.newChans != nil, "nil channel")
 	assert.Assert(s.tunnels != nil, "nil tunnels")
 
@@ -93,7 +93,7 @@ func (s *session) Start() error {
 	return nil
 }
 
-func (s *session) Close() (rerr error) {
+func (s *Session) Close() (rerr error) {
 	if s.closed.Load() {
 		return nil
 	}

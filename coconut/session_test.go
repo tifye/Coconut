@@ -14,7 +14,7 @@ import (
 func Test_Session(t *testing.T) {
 	signer, err := ssh.ParsePrivateKey(getBytes(t, "../testdata/mino"))
 	require.Nil(t, err)
-	setup := func(t *testing.T) (*Client, *session, func()) {
+	setup := func(t *testing.T) (*Client, *Session, func()) {
 		sshConfig := ssh.ServerConfig{NoClientAuth: true}
 		sshConfig.AddHostKey(signer)
 
@@ -26,7 +26,7 @@ func Test_Session(t *testing.T) {
 
 		clientReady := make(chan struct{})
 		go func() {
-			err = client.Start()
+			err := client.Start()
 			require.Nil(t, err)
 			clientReady <- struct{}{}
 		}()

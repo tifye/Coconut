@@ -76,9 +76,11 @@ func Test_ServerClientSessions(t *testing.T) {
 		defer teardown()
 	})
 
-	t.Run("ultra instinct", func(t *testing.T) {
-		_, teardown := setup(t, 50)
+	t.Run("session created for each client", func(t *testing.T) {
+		suite, teardown := setup(t, 10)
 		defer teardown()
+
+		tassert.True(t, len(suite.server.Sessions()) == len(suite.clients), "number of sessions should match number of clients")
 	})
 }
 

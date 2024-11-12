@@ -101,7 +101,7 @@ type Server struct {
 
 	sshConfig *ssh.ServerConfig
 
-	sessions map[string]*session
+	sessions map[string]*Session
 }
 
 func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
@@ -141,7 +141,7 @@ func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
 		clAddr:       opts.clientListenAddr,
 		clListenFunc: opts.clientListenFunc,
 		sshConfig:    &sshConfig,
-		sessions:     make(map[string]*session),
+		sessions:     make(map[string]*Session),
 	}, nil
 }
 
@@ -295,4 +295,10 @@ func (s *Server) processClients() {
 			s.logger.Error("failed to start session", "err", err)
 		}
 	}
+}
+
+func (s *Server) Sessions() map[string]*Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessions
 }
