@@ -1,6 +1,7 @@
 package coconut
 
 import (
+	"context"
 	"io"
 	"net"
 	"os"
@@ -36,7 +37,7 @@ func Test_ServerClientSessions(t *testing.T) {
 		)
 		require.Nil(t, err)
 
-		err = server.Start()
+		err = server.Start(context.Background())
 		require.Nil(t, err)
 
 		clients := make([]*Client, 0, numClients)
@@ -59,7 +60,7 @@ func Test_ServerClientSessions(t *testing.T) {
 				server:  server,
 				clients: clients,
 			}, func() {
-				err := server.Close()
+				err := server.Close(context.Background())
 				require.Nil(t, err)
 
 				eg := errgroup.Group{}
@@ -103,7 +104,7 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 	)
 	require.Nil(t, err, "client create err")
 
-	err = server.Start()
+	err = server.Start(context.Background())
 	require.Nil(t, err, "server start err")
 
 	err = client.Start()
@@ -114,15 +115,22 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 		require.Nil(t, err, "client close err")
 	}()
 
-	err = server.Close()
+	var proxyShutdownCalled bool
+	server.proxy.RegisterOnShutdown(func() {
+		proxyShutdownCalled = true
+	})
+
+	err = server.Close(context.Background())
 	require.Nil(t, err, "server close err")
 
 	tassert.True(t, server.inShutdown.Load(), "server should be marked as closed")
 	clListenerCloseErr := server.clListener.Close()
 	tassert.ErrorIs(t, clListenerCloseErr, net.ErrClosed, "client listener should be closed")
 
-	serverCloseErr := server.Close()
+	serverCloseErr := server.Close(context.Background())
 	tassert.ErrorIs(t, serverCloseErr, ErrServerShutdown, "should return ErrServerShutdown after calling close again")
+
+	tassert.True(t, proxyShutdownCalled, "proxy shutdown should be called")
 
 	for _, sesh := range server.sessions {
 		tassert.True(t, sesh.closed.Load(), "session should be closed")
@@ -137,11 +145,11 @@ func Test_ServerAcceptsConns(t *testing.T) {
 	)
 	require.Nil(t, err, "server create err")
 
-	err = server.Start()
+	err = server.Start(context.Background())
 	require.Nil(t, err, "server start err")
 
 	defer func() {
-		err := server.Close()
+		err := server.Close(context.Background())
 		require.Nil(t, err, "server close err")
 	}()
 

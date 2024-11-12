@@ -1,6 +1,7 @@
 package coconut
 
 import (
+	"context"
 	"io"
 	"net"
 	"testing"
@@ -27,11 +28,11 @@ func Test_ClientClosesUnderlyNetworkIO(t *testing.T) {
 	client, err := NewClient(log.New(io.Discard), addr)
 	require.Nil(t, err, "client create err")
 
-	err = server.Start()
+	err = server.Start(context.Background())
 	require.Nil(t, err, "server start err")
 
 	defer func() {
-		err := server.Close()
+		err := server.Close(context.Background())
 		require.Nil(t, err, "server close err")
 	}()
 
@@ -65,11 +66,11 @@ func Test_ClientOpensConnToServer(t *testing.T) {
 	client, err := NewClient(log.New(io.Discard), addr)
 	require.Nil(t, err, "client create err")
 
-	err = server.Start()
+	err = server.Start(context.Background())
 	require.Nil(t, err, "server start err")
 
 	defer func() {
-		err := server.Close()
+		err := server.Close(context.Background())
 		require.Nil(t, err, "server close err")
 	}()
 

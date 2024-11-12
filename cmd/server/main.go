@@ -71,12 +71,13 @@ func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
 		coconut.WithClientListenAddr(opts.ClientListenAddr),
 		coconut.WithHostKey(signer),
 		coconut.WithNoClientAuth(),
+		coconut.WithProxyAddr("127.0.0.1:9999"),
 	)
 	if err != nil {
 		return fmt.Errorf("server create: %s", err)
 	}
 
-	err = server.Start()
+	err = server.Start(ctx)
 	if err != nil {
 		return fmt.Errorf("server start: %s", err)
 	}
@@ -87,7 +88,7 @@ func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
 
 	errch := make(chan error)
 	go func() {
-		errch <- server.Close()
+		errch <- server.Close(context.Background())
 	}()
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
