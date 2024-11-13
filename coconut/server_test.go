@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
 	tassert "github.com/stretchr/testify/assert"
@@ -165,4 +166,80 @@ func getBytes(tb testing.TB, path string) []byte {
 	bts, err := os.ReadFile(path)
 	require.Nil(tb, err)
 	return bts
+}
+
+func Test_ServerStartErr(t *testing.T) {
+	addr := "127.0.0.1:9000"
+
+	// block server from using addr
+	testLn, err := net.Listen("tcp", addr)
+	require.Nil(t, err)
+	defer testLn.Close()
+
+	server, err := NewServer(
+		log.New(io.Discard),
+		WithClientListenAddr(addr),
+	)
+	require.Nil(t, err, "server create err")
+
+	err = server.Start(context.Background())
+	tassert.NotNil(t, err, "server start should err")
+}
+
+func Test_ServerDoneWithProxyErr(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:9000")
+	require.Nil(t, err)
+
+	server, err := NewServer(
+		log.New(io.Discard),
+		WithClientListenAddr("127.0.0.1:0"),
+		WithProxyListenFunc(func(network, address string) (net.Listener, error) {
+			return ln, nil
+		}),
+	)
+	require.Nil(t, err)
+
+	err = server.Start(context.Background())
+	tassert.Nil(t, err)
+
+	_ = ln.Close()
+
+	<-server.Done()
+	tassert.ErrorIs(t, server.Err(), net.ErrClosed)
+}
+
+func Test_ServerDoneWithNoErr(t *testing.T) {
+	setup := func(t *testing.T) *Server {
+		server, err := NewServer(
+			log.New(io.Discard),
+			WithClientListenAddr("127.0.0.1:0"),
+			WithProxyAddr("127.0.0.1:0"),
+		)
+		require.NoError(t, err)
+
+		err = server.Start(context.Background())
+		require.NoError(t, err)
+		return server
+	}
+
+	t.Run("call Done before Close", func(t *testing.T) {
+		server := setup(t)
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			err := server.Close(context.Background())
+			tassert.NoError(t, err)
+		}()
+		<-server.Done()
+		tassert.NoError(t, server.Err())
+	})
+
+	t.Run("call Close before Done", func(t *testing.T) {
+		server := setup(t)
+
+		err := server.Close(context.Background())
+		require.NoError(t, err)
+
+		<-server.Done()
+		tassert.NoError(t, server.Err())
+	})
 }

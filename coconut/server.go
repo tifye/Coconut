@@ -119,6 +119,8 @@ type Server struct {
 
 	mu         sync.Mutex
 	inShutdown atomic.Bool
+	donech     chan struct{}
+	err        error
 
 	clAddr       string
 	clListener   net.Listener
@@ -171,6 +173,7 @@ func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
 		logger:          logger,
 		mu:              sync.Mutex{},
 		inShutdown:      atomic.Bool{},
+		donech:          make(chan struct{}),
 		clAddr:          opts.clientListenAddr,
 		clListenFunc:    opts.clientListenFunc,
 		sshConfig:       &sshConfig,
@@ -297,8 +300,10 @@ func (s *Server) Start(ctx context.Context) (rerr error) {
 			return
 		}
 
-		s.logger.Error("proxy server failed", "err", err)
-		// todo: make server start ync
+		s.mu.Lock()
+		s.err = err
+		s.mu.Unlock()
+
 		cctx := context.WithoutCancel(ctx)
 		s.logger.Error(s.Close(cctx))
 	}()
@@ -312,15 +317,16 @@ func (s *Server) Close(ctx context.Context) (rerr error) {
 	if s.inShutdown.Load() {
 		return ErrServerShutdown
 	}
+	s.inShutdown.Store(true)
+	defer close(s.donech)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.inShutdown.Store(true)
-
-	assert.Assert(s.clListener != nil, "nil client listener")
 	eg := errgroup.Group{}
-	eg.Go(s.clListener.Close)
+	if s.clListener != nil {
+		eg.Go(s.clListener.Close)
+	}
 	for _, sesh := range s.sessions {
 		eg.Go(sesh.Close)
 	}
@@ -338,6 +344,17 @@ func (s *Server) Close(ctx context.Context) (rerr error) {
 	return nil
 }
 
+func (s *Server) Done() <-chan struct{} {
+	return s.donech
+}
+
+func (s *Server) Err() error {
+	s.mu.Lock()
+	err := s.err
+	s.mu.Unlock()
+	return err
+}
+
 func (s *Server) processClients() {
 	assert.Assert(s.clListener != nil, "nil client listener")
 	assert.Assert(s.sshConfig != nil, "nil ssh client config")
@@ -349,8 +366,7 @@ func (s *Server) processClients() {
 				return
 			}
 			s.logger.Error("failed to accept network conn", "err", err)
-			// todo: make server start sync
-			return
+			continue
 		}
 		s.logger.Debug("accepted net conn", "raddr", conn.RemoteAddr(), "laddr", conn.LocalAddr())
 
