@@ -8,11 +8,12 @@ import (
 	"github.com/charmbracelet/log"
 	tassert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tifye/Coconut/testutil"
 	"golang.org/x/crypto/ssh"
 )
 
 func Test_Session(t *testing.T) {
-	signer, err := ssh.ParsePrivateKey(getBytes(t, "../testdata/mino"))
+	signer, err := ssh.ParsePrivateKey(testutil.GetBytes(t, "../testdata/mino"))
 	require.Nil(t, err)
 	setup := func(t *testing.T) (*Client, *Session, func()) {
 		sshConfig := ssh.ServerConfig{NoClientAuth: true}

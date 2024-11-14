@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -12,12 +11,13 @@ import (
 	"github.com/charmbracelet/log"
 	tassert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tifye/Coconut/testutil"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 )
 
 func Test_ServerClientSessions(t *testing.T) {
-	signer, err := ssh.ParsePrivateKey(getBytes(t, "../testdata/mino"))
+	signer, err := ssh.ParsePrivateKey(testutil.GetBytes(t, "../testdata/mino"))
 	require.Nil(t, err)
 
 	type suite struct {
@@ -87,7 +87,7 @@ func Test_ServerClientSessions(t *testing.T) {
 }
 
 func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
-	signer, err := ssh.ParsePrivateKey(getBytes(t, "../testdata/mino"))
+	signer, err := ssh.ParsePrivateKey(testutil.GetBytes(t, "../testdata/mino"))
 	require.Nil(t, err)
 
 	addr := "127.0.0.1:9000"
@@ -159,13 +159,6 @@ func Test_ServerAcceptsConns(t *testing.T) {
 
 	err = conn.Close()
 	tassert.Nil(t, err, "conn close err")
-}
-
-func getBytes(tb testing.TB, path string) []byte {
-	tb.Helper()
-	bts, err := os.ReadFile(path)
-	require.Nil(tb, err)
-	return bts
 }
 
 func Test_ServerStartErr(t *testing.T) {
