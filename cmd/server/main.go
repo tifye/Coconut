@@ -43,6 +43,7 @@ func main() {
 
 type ServerOpts struct {
 	ClientListenAddr string
+	ProxyAddr        string
 }
 
 func newServerCommand(logger *log.Logger) *cobra.Command {
@@ -56,6 +57,7 @@ func newServerCommand(logger *log.Logger) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.ClientListenAddr, "cla", "127.0.0.1:9000", "Address on which to listen for client connections.")
+	cmd.Flags().StringVar(&opts.ProxyAddr, "pa", "127.0.0.1:9999", "Address on which to host proxy")
 
 	return cmd
 }
@@ -71,7 +73,7 @@ func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
 		coconut.WithClientListenAddr(opts.ClientListenAddr),
 		coconut.WithHostKey(signer),
 		coconut.WithNoClientAuth(),
-		coconut.WithProxyAddr("127.0.0.1:9999"),
+		coconut.WithProxyAddr(opts.ProxyAddr),
 	)
 	if err != nil {
 		return fmt.Errorf("server create: %s", err)
