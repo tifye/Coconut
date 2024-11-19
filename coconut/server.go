@@ -263,6 +263,16 @@ func authLogCallback(logger *log.Logger) func(conn ssh.ConnMetadata, method stri
 	}
 }
 
+func (s *Server) ProxyAddr() string {
+	s.mu.Lock()
+	proxy := s.proxy
+	s.mu.Unlock()
+	if proxy == nil {
+		return ""
+	}
+	return proxy.Addr
+}
+
 // ListenFunc is a function used to create a net.Listener
 type ListenFunc func(network string, address string) (net.Listener, error)
 

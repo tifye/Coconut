@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,9 +117,9 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 		require.Nil(t, err, "client close err")
 	}()
 
-	var proxyShutdownCalled bool
+	var proxyShutdownCalled atomic.Bool
 	server.proxy.RegisterOnShutdown(func() {
-		proxyShutdownCalled = true
+		proxyShutdownCalled.Store(true)
 	})
 
 	err = server.Close(context.Background())
@@ -131,7 +132,7 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 	serverCloseErr := server.Close(context.Background())
 	tassert.ErrorIs(t, serverCloseErr, ErrServerShutdown, "should return ErrServerShutdown after calling close again")
 
-	tassert.True(t, proxyShutdownCalled, "proxy shutdown should be called")
+	tassert.True(t, proxyShutdownCalled.Load(), "proxy shutdown should be called")
 
 	for _, sesh := range server.sessions {
 		tassert.True(t, sesh.closed.Load(), "session should be closed")
