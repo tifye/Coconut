@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,8 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 )
 
+type sessionDiscoveryMethod string
+
 type serverOptions struct {
 	SSHSigner               ssh.Signer
 	clientListenAddr        string
@@ -34,6 +37,7 @@ type serverOptions struct {
 	noClientAuth            bool
 	proxyAddr               string
 	proxyListenFunc         ListenFunc
+	noDiscovery             bool
 }
 
 type ServerOption func(options *serverOptions) error
@@ -117,6 +121,13 @@ func WithClientListenFunc(f ListenFunc) ServerOption {
 	}
 }
 
+func WithNoDiscovery() ServerOption {
+	return func(options *serverOptions) error {
+		options.noDiscovery = true
+		return nil
+	}
+}
+
 type Server struct {
 	logger *log.Logger
 
@@ -181,7 +192,14 @@ func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
 		sessions:        make(map[string]*Session),
 		proxyListenFunc: opts.proxyListenFunc,
 	}
-	server.proxy = newServerProxy(logger.WithPrefix("proxy"), opts.proxyAddr, server.discoverSession)
+
+	var discover discoverSession
+	if opts.noDiscovery {
+		discover = disoverFirst(server.Sessions)
+	} else {
+		discover = server.discoverSession
+	}
+	server.proxy = newServerProxy(logger.WithPrefix("proxy"), opts.proxyAddr, discover)
 
 	return server, nil
 }
@@ -397,6 +415,9 @@ func (s *Server) processClients() {
 		}
 		assert.Assert(sesh != nil, "nil session")
 
+		// todo: send to client through banner
+		s.logger.Info("client session created", "subdomain", subdomain)
+
 		s.mu.Lock()
 		s.sessions[subdomain] = sesh
 		s.mu.Unlock()
@@ -414,15 +435,25 @@ func (s *Server) Sessions() map[string]*Session {
 	return s.sessions
 }
 
-func (s *Server) discoverSession() (*Session, error) {
+type discoverSession func(string) (*Session, error)
+
+func (s *Server) discoverSession(k string) (*Session, error) {
 	sessions := s.Sessions()
-	for _, v := range sessions {
-		return v, nil
+	sesh, ok := sessions[k]
+	if !ok {
+		return nil, ErrSessionNotFound
 	}
-	return nil, ErrSessionNotFound
+	return sesh, nil
 }
 
-type discoverSession func() (*Session, error)
+func disoverFirst(sessions func() map[string]*Session) discoverSession {
+	return func(s string) (*Session, error) {
+		for _, v := range sessions() {
+			return v, nil
+		}
+		return nil, nil
+	}
+}
 
 type ctxKey string
 
@@ -474,7 +505,8 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 			return
 		}
 
-		sesh, err := discover()
+		subpart, _, _ := strings.Cut(r.Host, ".")
+		sesh, err := discover(subpart)
 		if err != nil {
 			if errors.Is(err, ErrSessionNotFound) {
 				rlogger.Debug("session not found")

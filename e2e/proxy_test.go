@@ -50,6 +50,7 @@ func newSuite(t *testing.T, numClients int) *suite {
 		}),
 		coconut.WithHostKey(signer),
 		coconut.WithNoClientAuth(),
+		coconut.WithNoDiscovery(),
 	)
 	require.NoError(t, err)
 
@@ -142,6 +143,7 @@ func Test_BasicRequest(t *testing.T) {
 		"Content-Type":  "application/json",
 		"Custom-Header": "CustomValue",
 	}
+
 	url := fmt.Sprintf("http://%s/echo", suite.server.ProxyAddr())
 	req, err := http.NewRequest(http.MethodGet, url, bytes.NewBufferString(requestBody))
 	require.NoError(t, err)
