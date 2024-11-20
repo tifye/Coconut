@@ -36,7 +36,8 @@ func main() {
 }
 
 type ClientOpts struct {
-	ServerAddr string
+	ServerAddr  string
+	ProxyToAddr string
 }
 
 func newClientCommand(logger *log.Logger) *cobra.Command {
@@ -50,6 +51,7 @@ func newClientCommand(logger *log.Logger) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.ServerAddr, "saddr", "127.0.0.1:9000", "Address on which server listens for client connections.")
+	cmd.Flags().StringVarP(&opts.ProxyToAddr, "paddr", "p", "127.0.0.1:3000", "Address to which to proxy request.")
 
 	return cmd
 }
@@ -58,6 +60,7 @@ func runClient(ctx context.Context, logger *log.Logger, opts ClientOpts) error {
 	client, err := coconut.NewClient(
 		logger.WithPrefix("client"),
 		opts.ServerAddr,
+		opts.ProxyToAddr,
 		coconut.WithHostKeyCallback(ssh.InsecureIgnoreHostKey()),
 		coconut.WithUser("tifye"),
 	)

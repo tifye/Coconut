@@ -54,13 +54,15 @@ func newSuite(t *testing.T, numClients int) *suite {
 	require.NoError(t, err)
 
 	backends := make([]*backend, 0)
-	backends = append(backends, newBackend(t, "backend-1", "127.0.0.1:0"))
+	backend := newBackend(t, "backend-1", "127.0.0.1:0")
+	backends = append(backends, backend)
 
 	clients := make([]*coconut.Client, 0, numClients)
 	for range numClients {
 		client, err := coconut.NewClient(
 			log.New(io.Discard),
 			cln.Addr().String(),
+			backend.Addr,
 			coconut.WithHostKeyCallback(ssh.InsecureIgnoreHostKey()),
 		)
 		require.Nil(t, err)
@@ -153,17 +155,17 @@ func Test_BasicRequest(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	tassert.Equal(t, resp.StatusCode, http.StatusOK, "status code should be equal")
+	tassert.Equal(t, http.StatusOK, resp.StatusCode, "status code should be equal")
 
 	var body map[string]interface{}
 	err = json.NewDecoder(resp.Body).Decode(&body)
 	require.NoError(t, err, "json body decode")
 
-	tassert.Equal(t, body["body"], requestBody)
+	tassert.Equal(t, requestBody, body["body"])
 
 	responseHeaders, ok := body["headers"].(map[string]interface{})
 	require.True(t, ok, "expected headers in response")
 	for k, v := range requestHeaders {
-		tassert.Equalf(t, responseHeaders[k], v, "expected header %q to be %q, got %q", k, v, responseHeaders[k])
+		tassert.Equalf(t, v, responseHeaders[k], "expected header %q to be %q, got %q", k, v, responseHeaders[k])
 	}
 }

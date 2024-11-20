@@ -46,7 +46,12 @@ func Test_ServerClientSessions(t *testing.T) {
 		wg := sync.WaitGroup{}
 		wg.Add(numClients)
 		for i := range numClients {
-			client, err := NewClient(log.New(io.Discard), ln.Addr().String(), WithHostKeyCallback(ssh.InsecureIgnoreHostKey()))
+			client, err := NewClient(
+				log.New(io.Discard),
+				ln.Addr().String(),
+				"",
+				WithHostKeyCallback(ssh.InsecureIgnoreHostKey()),
+			)
 			require.Nil(t, err)
 
 			clients = append(clients, client)
@@ -103,6 +108,7 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 	client, err := NewClient(
 		log.New(io.Discard),
 		addr,
+		"",
 	)
 	require.Nil(t, err, "client create err")
 

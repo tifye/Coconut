@@ -1,11 +1,16 @@
 package coconut
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/tifye/Coconut/assert"
@@ -79,10 +84,19 @@ type Client struct {
 
 	sshConfig *ssh.ClientConfig
 	sshConn   ssh.Conn
-	tunnels   []*tunnel
+	tunnels   []*clientTunnel
+
+	ln          *connChannelListener
+	proxy       *http.Server
+	proxyToAddr string
 }
 
-func NewClient(logger *log.Logger, serverAddr string, options ...ClientOption) (*Client, error) {
+func NewClient(
+	logger *log.Logger,
+	serverAddr string,
+	proxyToAddr string,
+	options ...ClientOption,
+) (*Client, error) {
 	assert.Assert(serverAddr != "", "zero value server address")
 	assert.Assert(logger != nil, "nil logger")
 
@@ -107,15 +121,23 @@ func NewClient(logger *log.Logger, serverAddr string, options ...ClientOption) (
 		HostKeyCallback: opts.hostKeyCallback,
 	}
 
+	proxy := newClientProxy(logger.WithPrefix("proxy"), proxyToAddr)
+
 	return &Client{
-		logger:     logger,
-		srvAddr:    serverAddr,
-		dialFunc:   opts.dialFunc,
-		sshConfig:  sshConfig,
+		logger:   logger,
+		srvAddr:  serverAddr,
+		dialFunc: opts.dialFunc,
+
 		mu:         sync.Mutex{},
 		inShutdown: atomic.Bool{},
 		closeWg:    &sync.WaitGroup{},
-		tunnels:    make([]*tunnel, 0),
+
+		sshConfig: sshConfig,
+		tunnels:   make([]*clientTunnel, 0),
+
+		ln:          newConnChannelListener(),
+		proxy:       proxy,
+		proxyToAddr: proxyToAddr,
 	}, nil
 }
 
@@ -167,7 +189,7 @@ func (c *Client) Start() error {
 	c.sshConn = sshConn
 
 	assert.Assert(c.closeWg != nil, "nil wait group")
-	c.closeWg.Add(2)
+	c.closeWg.Add(3)
 	go func() {
 		defer c.closeWg.Done()
 		ssh.DiscardRequests(reqs)
@@ -175,6 +197,13 @@ func (c *Client) Start() error {
 	go func() {
 		defer c.closeWg.Done()
 		c.processNewChannels(chans)
+	}()
+	go func() {
+		defer c.closeWg.Done()
+		err := c.proxy.Serve(c.ln)
+		if err != nil {
+			c.logger.Error("")
+		}
 	}()
 
 	assert.Assert(c.sshConn != nil, "nil ssh conn")
@@ -192,28 +221,57 @@ func (c *Client) Close() (rerr error) {
 	assert.Assert(c.closeWg != nil, "nil wait group")
 	assert.Assert(c.tunnels != nil, "nil tunnels")
 	assert.Assert(c.sshConn != nil, "nil network conn")
+	assert.Assert(c.proxy != nil, "nil proxy")
 
 	defer c.closeWg.Wait()
-	defer func() {
-		c.logger.Debug("closing ssh connection")
-		err := c.sshConn.Close()
-		if errors.Is(err, net.ErrClosed) || err == nil {
-			return
-		}
-		if rerr == nil {
-			rerr = err
-		} else {
-			rerr = errors.Join(rerr, err)
-		}
-	}()
 
-	teg := errgroup.Group{}
-	for _, t := range c.tunnels {
-		teg.Go(t.Close)
+	eg := errgroup.Group{}
+	for i, t := range c.tunnels {
+		eg.Go(func() error {
+			c.logger.Debugf("closing tunnel %d", i)
+			return t.Close()
+		})
 	}
 	c.mu.Unlock()
 
-	return teg.Wait()
+	eg.Go(func() error {
+		c.logger.Debug("closing proxy")
+		return c.proxy.Shutdown(context.Background())
+	})
+
+	eg.Go(func() error {
+		c.logger.Debug("closing ssh connection")
+		err := c.sshConn.Close()
+		if errors.Is(err, net.ErrClosed) || err == nil {
+			return nil
+		}
+		return err
+	})
+
+	return eg.Wait()
+}
+
+func newClientProxy(logger *log.Logger, addr string) *http.Server {
+	s := &http.Server{
+		Handler: &httputil.ReverseProxy{
+			Rewrite: func(r *httputil.ProxyRequest) {
+				r.SetXForwarded()
+				uri, err := url.Parse("http://" + addr)
+				assert.Assert(err == nil, "addr parse")
+				logger.Debug("rewriting", "host", r.In.URL.Host, "method", r.In.Method, "path", r.In.URL.Path)
+				r.SetURL(uri)
+			},
+			ModifyResponse: func(r *http.Response) error {
+				logger.Debug("routing back response", "host", r.Request.URL.Host, "method", r.Request.Method, "path", r.Request.URL.Path)
+				return nil
+			},
+		},
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			logger.Debug("Conn state changed", "state", state.String())
+		},
+	}
+
+	return s
 }
 
 func (c *Client) processNewChannels(chans <-chan ssh.NewChannel) {
@@ -237,14 +295,102 @@ func (c *Client) processNewChannels(chans <-chan ssh.NewChannel) {
 		}
 		assert.Assert(sshChan != nil, "nil ssh channel")
 		assert.Assert(reqs != nil, "nil channel")
-		tunnel := &tunnel{
-			sshChan: sshChan,
-			reqs:    reqs,
+		tunnel := &clientTunnel{
+			tunnel: tunnel{
+				sshChan: sshChan,
+				reqs:    reqs,
+			},
+			conn: netSSHChannelConn{
+				laddr:   c.conn.LocalAddr(),
+				raddr:   c.conn.RemoteAddr(),
+				Channel: sshChan,
+			},
 		}
 
 		assert.Assert(c.tunnels != nil, "nil tunnels")
 		c.mu.Lock()
 		c.tunnels = append(c.tunnels, tunnel)
 		c.mu.Unlock()
+
+		c.ln.serveConn(tunnel.conn)
 	}
+}
+
+type clientTunnel struct {
+	tunnel
+	conn net.Conn
+}
+
+type netSSHChannelConn struct {
+	ssh.Channel
+	laddr net.Addr
+	raddr net.Addr
+}
+
+func (c netSSHChannelConn) LocalAddr() net.Addr {
+	return c.laddr
+}
+func (c netSSHChannelConn) RemoteAddr() net.Addr {
+	return c.raddr
+}
+func (c netSSHChannelConn) SetDeadline(t time.Time) error {
+	return nil
+}
+func (c netSSHChannelConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+func (c netSSHChannelConn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+type connChannelListener struct {
+	ch     chan net.Conn
+	closed atomic.Bool
+}
+
+func newConnChannelListener() *connChannelListener {
+	return &connChannelListener{
+		ch:     make(chan net.Conn, 1),
+		closed: atomic.Bool{},
+	}
+}
+
+func (l *connChannelListener) serveConn(conn net.Conn) error {
+	if l.closed.Load() {
+		return net.ErrClosed
+	}
+
+	l.ch <- conn
+	return nil
+}
+
+func (l *connChannelListener) Accept() (net.Conn, error) {
+	conn, ok := <-l.ch
+	if !ok {
+		return nil, net.ErrClosed
+	}
+	return conn, nil
+}
+
+func (l *connChannelListener) Close() error {
+	if l.closed.Load() {
+		return net.ErrClosed
+	}
+
+	close(l.ch)
+	l.closed.Store(true)
+	return nil
+}
+
+func (l *connChannelListener) Addr() net.Addr {
+	return emptyAddr{}
+}
+
+type emptyAddr struct{}
+
+func (emptyAddr) Network() string {
+	return ""
+}
+func (emptyAddr) String() string {
+	return ""
 }

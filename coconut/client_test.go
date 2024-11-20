@@ -26,7 +26,7 @@ func Test_ClientClosesUnderlyNetworkIO(t *testing.T) {
 	)
 	require.Nil(t, err, "server create err")
 
-	client, err := NewClient(log.New(io.Discard), addr)
+	client, err := NewClient(log.New(io.Discard), addr, "")
 	require.Nil(t, err, "client create err")
 
 	err = server.Start(context.Background())
@@ -64,7 +64,7 @@ func Test_ClientOpensConnToServer(t *testing.T) {
 	)
 	require.Nil(t, err, "server create err")
 
-	client, err := NewClient(log.New(io.Discard), addr)
+	client, err := NewClient(log.New(io.Discard), addr, "")
 	require.Nil(t, err, "client create err")
 
 	err = server.Start(context.Background())
@@ -86,7 +86,7 @@ func Test_ClientOpensConnToServer(t *testing.T) {
 
 func Test_ClientErrsOnStartWithNoServer(t *testing.T) {
 	addr := "127.0.0.1:9000"
-	client, err := NewClient(log.New(io.Discard), addr)
+	client, err := NewClient(log.New(io.Discard), addr, "")
 	require.Nil(t, err, "client create err")
 
 	err = client.Start()

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,7 +21,8 @@ import (
 )
 
 var (
-	ErrServerShutdown = errors.New("server closed")
+	ErrServerShutdown  = errors.New("server closed")
+	ErrSessionNotFound = errors.New("session not found")
 )
 
 type serverOptions struct {
@@ -167,9 +170,7 @@ func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
 	}
 	sshConfig.AddHostKey(opts.SSHSigner)
 
-	proxy := newServerProxy(logger.WithPrefix("proxy"), opts.proxyAddr)
-
-	return &Server{
+	server := &Server{
 		logger:          logger,
 		mu:              sync.Mutex{},
 		inShutdown:      atomic.Bool{},
@@ -178,9 +179,11 @@ func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
 		clListenFunc:    opts.clientListenFunc,
 		sshConfig:       &sshConfig,
 		sessions:        make(map[string]*Session),
-		proxy:           proxy,
 		proxyListenFunc: opts.proxyListenFunc,
-	}, nil
+	}
+	server.proxy = newServerProxy(logger.WithPrefix("proxy"), opts.proxyAddr, server.discoverSession)
+
+	return server, nil
 }
 
 func serverDefaults(logger *log.Logger, opts *serverOptions) error {
@@ -386,7 +389,8 @@ func (s *Server) processClients() {
 			continue
 		}
 
-		sesh, err := newSession(conn, sshConn, chans, reqs)
+		subdomain := generateSubdomain()
+		sesh, err := newSession(conn, sshConn, chans, reqs, s.logger.WithPrefix(subdomain))
 		if err != nil {
 			s.logger.Error("failed to create new sesson", "err", err)
 			continue
@@ -394,7 +398,7 @@ func (s *Server) processClients() {
 		assert.Assert(sesh != nil, "nil session")
 
 		s.mu.Lock()
-		s.sessions[string(sshConn.SessionID())] = sesh
+		s.sessions[subdomain] = sesh
 		s.mu.Unlock()
 
 		err = sesh.Start()
@@ -410,9 +414,59 @@ func (s *Server) Sessions() map[string]*Session {
 	return s.sessions
 }
 
-func newServerProxy(logger *log.Logger, addr string) *http.Server {
+func (s *Server) discoverSession() (*Session, error) {
+	sessions := s.Sessions()
+	for _, v := range sessions {
+		return v, nil
+	}
+	return nil, ErrSessionNotFound
+}
+
+type discoverSession func() (*Session, error)
+
+type ctxKey string
+
+const sessionContextKey ctxKey = "session"
+
+func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *http.Server {
+	proxyHandler := &httputil.ReverseProxy{
+		Transport: &serverTransport{
+			logger: logger.WithPrefix("server-transport"),
+		},
+		Rewrite: func(r *httputil.ProxyRequest) {
+			sesh, ok := r.In.Context().Value(sessionContextKey).(*Session)
+			assert.Assert(ok, "expected session object")
+
+			sesh.logger.Debug("rewriting", "host", r.In.URL.Host, "method", r.In.Method, "path", r.In.URL.Path)
+
+			r.SetXForwarded()
+			url, err := url.Parse(fmt.Sprintf("http://%s", sesh.conn.RemoteAddr().String()))
+			assert.Assert(err == nil, "url parse err")
+			r.SetURL(url)
+		},
+		ErrorLog: logger.StandardLog(),
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			sesh, ok := r.Context().Value(sessionContextKey).(*Session)
+			assert.Assert(ok, "expected session object")
+
+			sesh.logger.Error("proxy err", "host", r.URL.Host, "method", r.Method, "path", r.URL.Path, "err", err)
+
+			w.WriteHeader(http.StatusBadGateway)
+		},
+		ModifyResponse: func(r *http.Response) error {
+			sesh, ok := r.Request.Context().Value(sessionContextKey).(*Session)
+			assert.Assert(ok, "expected session object")
+
+			sesh.logger.Debug("routing back response", "host", r.Request.URL.Host, "method", r.Request.Method, "path", r.Request.URL.Path)
+
+			return nil
+		},
+	}
+
 	mux := http.ServeMux{}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		rlogger := logger.With("host", r.Host, "path", r.URL.Path)
+
 		upgrade := r.Header.Get("Upgrade")
 		if upgrade == "websocket" {
 			w.WriteHeader(http.StatusNotAcceptable)
@@ -420,7 +474,21 @@ func newServerProxy(logger *log.Logger, addr string) *http.Server {
 			return
 		}
 
-		w.Write([]byte("hello from coconut"))
+		sesh, err := discover()
+		if err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				rlogger.Debug("session not found")
+			} else {
+				rlogger.Error("session discover err")
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write(nil)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), sessionContextKey, sesh)
+		r = r.WithContext(ctx)
+		proxyHandler.ServeHTTP(w, r)
 	})
 
 	return &http.Server{
@@ -429,4 +497,15 @@ func newServerProxy(logger *log.Logger, addr string) *http.Server {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
+}
+
+type serverTransport struct {
+	logger *log.Logger
+}
+
+func (st *serverTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	sesh, ok := r.Context().Value(sessionContextKey).(*Session)
+	assert.Assert(ok, "expected session object")
+
+	return sesh.RoundTrip(r)
 }

@@ -44,6 +44,7 @@ func main() {
 type ServerOpts struct {
 	ClientListenAddr string
 	ProxyAddr        string
+	HostKeyPath      string
 }
 
 func newServerCommand(logger *log.Logger) *cobra.Command {
@@ -56,14 +57,23 @@ func newServerCommand(logger *log.Logger) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.ClientListenAddr, "cla", "127.0.0.1:9000", "Address on which to listen for client connections.")
+	cmd.Flags().StringVar(&opts.ClientListenAddr, "cla", "127.0.0.1:9000", "Address on which to listen for client connections")
 	cmd.Flags().StringVar(&opts.ProxyAddr, "pa", "127.0.0.1:9999", "Address on which to host proxy")
+	cmd.Flags().StringVar(&opts.HostKeyPath, "host-key", "", "Private key used for SSH host")
 
 	return cmd
 }
 
 func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
-	signer, err := ssh.ParsePrivateKey(getBytes(os.Getenv("HOST_KEY")))
+	hostKeyPath := os.Getenv("HOST_KEY")
+	if opts.HostKeyPath != "" {
+		hostKeyPath = opts.HostKeyPath
+	}
+	if hostKeyPath == "" {
+		return fmt.Errorf("no host key path set")
+	}
+
+	signer, err := ssh.ParsePrivateKey(getBytes(hostKeyPath))
 	if err != nil {
 		return err
 	}

@@ -22,7 +22,7 @@ func Test_Session(t *testing.T) {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		require.Nil(t, err)
 
-		client, err := NewClient(log.New(io.Discard), ln.Addr().String())
+		client, err := NewClient(log.New(io.Discard), ln.Addr().String(), "")
 		require.Nil(t, err)
 
 		clientReady := make(chan struct{})
@@ -38,7 +38,7 @@ func Test_Session(t *testing.T) {
 		sshConn, chans, reqs, err := ssh.NewServerConn(conn, &sshConfig)
 		require.Nil(t, err)
 
-		session, err := newSession(conn, sshConn, chans, reqs)
+		session, err := newSession(conn, sshConn, chans, reqs, log.New(io.Discard))
 		require.Nil(t, err)
 
 		<-clientReady
