@@ -16,17 +16,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type sessionSSHConn interface {
-	io.Closer
-	OpenChannel(name string, data []byte) (ssh.Channel, <-chan *ssh.Request, error)
-}
-
 // Session represents a clients entire connection with the server
 type Session struct {
 	logger *log.Logger
 
 	conn    net.Conn
-	sshConn sessionSSHConn
+	sshConn *ssh.ServerConn
 
 	newChans <-chan ssh.NewChannel
 	reqs     <-chan *ssh.Request
@@ -41,7 +36,7 @@ type Session struct {
 
 func newSession(
 	conn net.Conn,
-	sshConn sessionSSHConn,
+	sshConn *ssh.ServerConn,
 	newChans <-chan ssh.NewChannel,
 	reqs <-chan *ssh.Request,
 	logger *log.Logger,
