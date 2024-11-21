@@ -26,8 +26,6 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 )
 
-type sessionDiscoveryMethod string
-
 type serverOptions struct {
 	SSHSigner               ssh.Signer
 	clientListenAddr        string
