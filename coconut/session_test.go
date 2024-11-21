@@ -1,8 +1,10 @@
 package coconut
 
 import (
+	"bytes"
 	"io"
 	"net"
+	"net/http"
 	"testing"
 
 	"github.com/charmbracelet/log"
@@ -104,4 +106,97 @@ func Test_Session(t *testing.T) {
 		err = session.Close()
 		require.Nil(t, err)
 	})
+}
+
+type mockReadWriteCloser struct {
+	readBuf  *bytes.Buffer
+	writeBuf *bytes.Buffer
+}
+
+func (m *mockReadWriteCloser) Read(p []byte) (int, error) {
+	return m.readBuf.Read(p)
+}
+
+func (m *mockReadWriteCloser) Write(p []byte) (int, error) {
+	return m.writeBuf.Write(p)
+}
+
+func (m *mockReadWriteCloser) Close() error { return nil }
+
+func Test_SessionTunnelRoundTrip(t *testing.T) {
+	tests := []struct {
+		name           string
+		request        *http.Request
+		mockResponse   string
+		expectedError  string
+		expectedStatus int
+	}{
+		{
+			name: "successful GET request",
+			request: func() *http.Request {
+				req, _ := http.NewRequest("GET", "http://example.com/test", nil)
+				return req
+			}(),
+			mockResponse: "HTTP/1.1 200 OK\r\n" +
+				"Content-Length: 2\r\n" +
+				"\r\n" +
+				"ok",
+			expectedStatus: 200,
+		},
+		{
+			name: "successful POST request",
+			request: func() *http.Request {
+				body := bytes.NewBufferString("test-body")
+				req, _ := http.NewRequest("POST", "http://example.com/test", body)
+				req.Header.Set("Content-Type", "text/plain")
+				return req
+			}(),
+			mockResponse: "HTTP/1.1 201 Created\r\n" +
+				"Content-Length: 7\r\n" +
+				"\r\n" +
+				"created",
+			expectedStatus: 201,
+		},
+		{
+			name: "malformed response",
+			request: func() *http.Request {
+				req, _ := http.NewRequest("GET", "http://example.com/test", nil)
+				return req
+			}(),
+			mockResponse:  "invalid-response",
+			expectedError: "resp read:",
+		},
+	}
+
+	for _, tt := range tests {
+		mockRWC := &mockReadWriteCloser{
+			readBuf:  bytes.NewBuffer(nil),
+			writeBuf: bytes.NewBuffer(nil),
+		}
+		st := &sessionTunnel{
+			tunnel: tunnel{
+				sshChan: mockRWC,
+			},
+		}
+
+		mockRWC.readBuf.Write([]byte(tt.mockResponse))
+
+		resp, err := st.RoundTrip(tt.request)
+		if tt.expectedError != "" {
+			tassert.Contains(t, err.Error(), "malformed HTTP response")
+			continue
+		}
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		tassert.Equal(t, tt.expectedStatus, resp.StatusCode)
+
+		writtenReq := mockRWC.writeBuf.String()
+		tassert.Contains(t, writtenReq, tt.request.Method)
+		tassert.Contains(t, writtenReq, tt.request.URL.Path)
+
+		if tt.request.Method == "POST" {
+			body, _ := io.ReadAll(resp.Body)
+			tassert.Equal(t, "created", string(body))
+		}
+	}
 }
