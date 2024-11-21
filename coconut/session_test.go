@@ -123,14 +123,15 @@ func (m *mockReadWriteCloser) Write(p []byte) (int, error) {
 
 func (m *mockReadWriteCloser) Close() error { return nil }
 
-func Test_SessionTunnelRoundTrip(t *testing.T) {
-	tests := []struct {
+func Test_RoundTrip(t *testing.T) {
+	type resReqTest struct {
 		name           string
 		request        *http.Request
 		mockResponse   string
 		expectedError  string
 		expectedStatus int
-	}{
+	}
+	var reqResTests = []resReqTest{
 		{
 			name: "successful GET request",
 			request: func() *http.Request {
@@ -168,35 +169,79 @@ func Test_SessionTunnelRoundTrip(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		mockRWC := &mockReadWriteCloser{
-			readBuf:  bytes.NewBuffer(nil),
-			writeBuf: bytes.NewBuffer(nil),
-		}
-		st := &sessionTunnel{
-			tunnel: tunnel{
-				sshChan: mockRWC,
-			},
-		}
+	t.Run("sessionTunnel.RoundTrip", func(t *testing.T) {
+		tests := make([]resReqTest, len(reqResTests))
+		copy(tests, reqResTests)
+		for _, tt := range tests {
+			mockRWC := &mockReadWriteCloser{
+				readBuf:  bytes.NewBuffer(nil),
+				writeBuf: bytes.NewBuffer(nil),
+			}
+			st := &sessionTunnel{
+				tunnel: tunnel{
+					sshChan: mockRWC,
+				},
+			}
 
-		mockRWC.readBuf.Write([]byte(tt.mockResponse))
+			mockRWC.readBuf.Write([]byte(tt.mockResponse))
 
-		resp, err := st.RoundTrip(tt.request)
-		if tt.expectedError != "" {
-			tassert.Contains(t, err.Error(), "malformed HTTP response")
-			continue
+			resp, err := st.RoundTrip(tt.request)
+			if tt.expectedError != "" {
+				tassert.Contains(t, err.Error(), "malformed HTTP response")
+				continue
+			}
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			tassert.Equal(t, tt.expectedStatus, resp.StatusCode)
+
+			writtenReq := mockRWC.writeBuf.String()
+			tassert.Contains(t, writtenReq, tt.request.Method)
+			tassert.Contains(t, writtenReq, tt.request.URL.Path)
+
+			if tt.request.Method == "POST" {
+				body, _ := io.ReadAll(resp.Body)
+				tassert.Equal(t, "created", string(body))
+			}
 		}
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		tassert.Equal(t, tt.expectedStatus, resp.StatusCode)
+	})
 
-		writtenReq := mockRWC.writeBuf.String()
-		tassert.Contains(t, writtenReq, tt.request.Method)
-		tassert.Contains(t, writtenReq, tt.request.URL.Path)
+	t.Run("Session.RoundTrip", func(t *testing.T) {
+		tests := make([]resReqTest, len(reqResTests))
+		copy(tests, reqResTests)
+		for _, tt := range reqResTests {
+			mockRWC := &mockReadWriteCloser{
+				readBuf:  bytes.NewBuffer(nil),
+				writeBuf: bytes.NewBuffer(nil),
+			}
+			st := &sessionTunnel{
+				tunnel: tunnel{sshChan: mockRWC},
+				logger: log.New(io.Discard),
+			}
+			sesh := &Session{
+				tunnels: []*sessionTunnel{st},
+				trch:    make(chan *tunnelRequest),
+			}
+			go st.listen(sesh.trch)
 
-		if tt.request.Method == "POST" {
-			body, _ := io.ReadAll(resp.Body)
-			tassert.Equal(t, "created", string(body))
+			mockRWC.readBuf.Write([]byte(tt.mockResponse))
+
+			resp, err := sesh.RoundTrip(tt.request)
+			if tt.expectedError != "" {
+				tassert.Contains(t, err.Error(), "malformed HTTP response")
+				continue
+			}
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			tassert.Equal(t, tt.expectedStatus, resp.StatusCode)
+
+			writtenReq := mockRWC.writeBuf.String()
+			tassert.Contains(t, writtenReq, tt.request.Method)
+			tassert.Contains(t, writtenReq, tt.request.URL.Path)
+
+			if tt.request.Method == "POST" {
+				body, _ := io.ReadAll(resp.Body)
+				tassert.Equal(t, "created", string(body))
+			}
 		}
-	}
+	})
 }
