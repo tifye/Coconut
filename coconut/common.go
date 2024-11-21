@@ -10,7 +10,7 @@ import (
 // tunnel represents a channel of communication between server and client.
 // Communication is done over an SSH Channel
 type tunnel struct {
-	sshChan ssh.Channel
+	sshChan io.ReadWriteCloser
 	reqs    <-chan *ssh.Request
 }
 
