@@ -50,8 +50,8 @@ func newClientCommand(logger *log.Logger) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.ServerAddr, "saddr", "127.0.0.1:9000", "Address on which server listens for client connections.")
-	cmd.Flags().StringVarP(&opts.ProxyToAddr, "paddr", "p", "127.0.0.1:3000", "Address to which to proxy request.")
+	cmd.Flags().StringVar(&opts.ServerAddr, "server-addr", "127.0.0.1:9000", "Address on which server listens for client connections.")
+	cmd.Flags().StringVarP(&opts.ProxyToAddr, "proxy-addr", "p", "127.0.0.1:3000", "Address to which to proxy request.")
 
 	return cmd
 }

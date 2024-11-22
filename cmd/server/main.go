@@ -57,8 +57,8 @@ func newServerCommand(logger *log.Logger) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.ClientListenAddr, "cla", "127.0.0.1:9000", "Address on which to listen for client connections")
-	cmd.Flags().StringVar(&opts.ProxyAddr, "pa", "127.0.0.1:9999", "Address on which to host proxy")
+	cmd.Flags().StringVar(&opts.ClientListenAddr, "client-addr", "127.0.0.1:9000", "Address on which to listen for client connections")
+	cmd.Flags().StringVar(&opts.ProxyAddr, "proxy-addr", "127.0.0.1:9999", "Address on which to host proxy")
 	cmd.Flags().StringVar(&opts.HostKeyPath, "host-key", "", "Private key used for SSH host")
 
 	return cmd
