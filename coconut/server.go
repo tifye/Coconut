@@ -504,7 +504,7 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 		sesh, err := discover(subpart)
 		if err != nil {
 			if errors.Is(err, ErrSessionNotFound) {
-				rlogger.Debug("session not found")
+				rlogger.Debugf("session '%s' not found", subpart)
 			} else {
 				rlogger.Error("session discover err")
 			}
