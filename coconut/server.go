@@ -455,18 +455,21 @@ func disoverFirst(sessions func() map[string]*Session) discoverSession {
 
 type ctxKey string
 
-const sessionContextKey ctxKey = "session"
+const sessionCtxKey ctxKey = "session"
+const reqLoggerCtxKey ctxKey = "logger"
 
 func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *http.Server {
+	var reqIdCounter atomic.Uint64
+
 	proxyHandler := &httputil.ReverseProxy{
 		Transport: &serverTransport{
 			logger: logger.WithPrefix("server-transport"),
 		},
 		Rewrite: func(r *httputil.ProxyRequest) {
-			sesh, ok := r.In.Context().Value(sessionContextKey).(*Session)
-			assert.Assert(ok, "expected session object")
+			sesh := r.In.Context().Value(sessionCtxKey).(*Session)
+			rlogger := r.In.Context().Value(reqLoggerCtxKey).(*log.Logger)
 
-			sesh.logger.Debug("rewriting", "host", r.In.URL.Host, "method", r.In.Method, "path", r.In.URL.Path)
+			rlogger.Debug("rewriting")
 
 			r.SetXForwarded()
 			url, err := url.Parse(fmt.Sprintf("http://%s", sesh.conn.RemoteAddr().String()))
@@ -475,31 +478,25 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 		},
 		ErrorLog: logger.StandardLog(),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			sesh, ok := r.Context().Value(sessionContextKey).(*Session)
-			assert.Assert(ok, "expected session object")
-
-			sesh.logger.Error("proxy err", "host", r.URL.Host, "method", r.Method, "path", r.URL.Path, "err", err)
-
+			rlogger := r.Context().Value(reqLoggerCtxKey).(*log.Logger)
+			rlogger.Error("proxy err", "err", err)
 			w.WriteHeader(http.StatusBadGateway)
 		},
 		ModifyResponse: func(r *http.Response) error {
-			sesh, ok := r.Request.Context().Value(sessionContextKey).(*Session)
-			assert.Assert(ok, "expected session object")
-
-			sesh.logger.Debug("routing back response", "host", r.Request.URL.Host, "method", r.Request.Method, "path", r.Request.URL.Path)
-
+			rlogger := r.Request.Context().Value(reqLoggerCtxKey).(*log.Logger)
+			rlogger.Debug("routing back response")
 			return nil
 		},
 	}
 
 	mux := http.ServeMux{}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		rlogger := logger.With("host", r.Host, "path", r.URL.Path)
+		rlogger := logger.With("requestId", reqIdCounter.Add(1), "host", r.Host, "method", r.Method, "path", r.URL.Path)
 
 		upgrade := r.Header.Get("Upgrade")
 		if upgrade == "websocket" {
 			w.WriteHeader(http.StatusNotAcceptable)
-			logger.Debug("blocking websocket request", "host", r.URL.Host, "path", r.URL.Path)
+			rlogger.Debug("blocking websocket request", "host", r.URL.Host, "path", r.URL.Path)
 			return
 		}
 
@@ -516,7 +513,8 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), sessionContextKey, sesh)
+		ctx := context.WithValue(r.Context(), sessionCtxKey, sesh)
+		ctx = context.WithValue(ctx, reqLoggerCtxKey, rlogger.WithPrefix(sesh.subdomain))
 		r = r.WithContext(ctx)
 		proxyHandler.ServeHTTP(w, r)
 	})
@@ -534,8 +532,6 @@ type serverTransport struct {
 }
 
 func (st *serverTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	sesh, ok := r.Context().Value(sessionContextKey).(*Session)
-	assert.Assert(ok, "expected session object")
-
+	sesh := r.Context().Value(sessionCtxKey).(*Session)
 	return sesh.RoundTrip(r)
 }

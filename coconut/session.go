@@ -84,26 +84,28 @@ func (s *Session) Start() error {
 		}
 	}()
 
-	sshChan, reqs, err := s.sshConn.OpenChannel("tunnel", nil)
-	if err != nil {
-		return fmt.Errorf("tunnel open: %w", err)
-	}
+	for i := range 1 {
+		sshChan, reqs, err := s.sshConn.OpenChannel("tunnel", nil)
+		if err != nil {
+			return fmt.Errorf("tunnel open: %w", err)
+		}
 
-	assert.Assert(sshChan != nil, "nil ssh channel")
-	assert.Assert(reqs != nil, "nil channel")
-	assert.Assert(s.trch != nil, "nil tunnel request channel")
-	tunnel := &sessionTunnel{
-		tunnel: tunnel{
-			sshChan: sshChan,
-			reqs:    reqs,
-		},
-		logger: s.logger.WithPrefix("tunnel-1"),
-	}
-	go tunnel.listen(s.trch)
+		assert.Assert(sshChan != nil, "nil ssh channel")
+		assert.Assert(reqs != nil, "nil channel")
+		assert.Assert(s.trch != nil, "nil tunnel request channel")
+		tunnel := &sessionTunnel{
+			tunnel: tunnel{
+				sshChan: sshChan,
+				reqs:    reqs,
+			},
+			logger: s.logger.WithPrefix(fmt.Sprintf("tunnel-%d", i)),
+		}
+		go tunnel.listen(s.trch)
 
-	s.mu.Lock()
-	s.tunnels = append(s.tunnels, tunnel)
-	s.mu.Unlock()
+		s.mu.Lock()
+		s.tunnels = append(s.tunnels, tunnel)
+		s.mu.Unlock()
+	}
 
 	s.closeWg.Add(1)
 	go func() {
@@ -168,6 +170,7 @@ func (s *Session) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 
 	ctx := r.Context()
+
 	select {
 	case s.trch <- tr:
 	case <-ctx.Done():
@@ -179,8 +182,6 @@ func (s *Session) RoundTrip(r *http.Request) (*http.Response, error) {
 		return resp, nil
 	case err := <-tr.errch:
 		return nil, err
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	}
 }
 
@@ -191,7 +192,10 @@ type sessionTunnel struct {
 
 func (st *sessionTunnel) listen(trch <-chan *tunnelRequest) {
 	for tr := range trch {
-		st.logger.Debug("performing round trip", "host", tr.req.URL.Host, "path", tr.req.URL.Path)
+		ctx := tr.req.Context()
+		rlogger := ctx.Value(reqLoggerCtxKey).(*log.Logger)
+		rlogger.Debug("performing round trip", "tunnel", st.logger.GetPrefix())
+
 		resp, err := st.RoundTrip(tr.req)
 		if err != nil {
 			tr.errch <- err
@@ -200,16 +204,13 @@ func (st *sessionTunnel) listen(trch <-chan *tunnelRequest) {
 
 		resp.Body = &signalClose{done: tr.done, ReadCloser: resp.Body}
 
-		ctx := tr.req.Context()
 		select {
 		case tr.respch <- resp:
+			<-tr.done
 		case <-ctx.Done():
-			tr.errch <- ctx.Err()
-		}
-
-		select {
-		case <-tr.done:
-		case <-ctx.Done():
+			if resp != nil {
+				resp.Body.Close()
+			}
 			tr.errch <- ctx.Err()
 		}
 	}
