@@ -30,9 +30,10 @@ type Session struct {
 	closed  atomic.Bool
 	closeWg *sync.WaitGroup
 
-	mu      sync.Mutex
-	tunnels []*sessionTunnel
-	trch    chan *tunnelRequest
+	mu       sync.Mutex
+	tunnels  []*sessionTunnel
+	dtunnels map[string]*sessionTunnel
+	trch     chan *tunnelRequest
 }
 
 func newSession(
@@ -61,6 +62,7 @@ func newSession(
 		closeWg:   &sync.WaitGroup{},
 		mu:        sync.Mutex{},
 		tunnels:   make([]*sessionTunnel, 0),
+		dtunnels:  map[string]*sessionTunnel{},
 		trch:      make(chan *tunnelRequest),
 	}, nil
 }
@@ -85,20 +87,9 @@ func (s *Session) Start() error {
 	}()
 
 	for i := range 5 {
-		sshChan, reqs, err := s.sshConn.OpenChannel("tunnel", nil)
+		tunnel, err := s.openTunnel(fmt.Sprintf("tunnel-%d", i))
 		if err != nil {
-			return fmt.Errorf("tunnel open: %w", err)
-		}
-
-		assert.Assert(sshChan != nil, "nil ssh channel")
-		assert.Assert(reqs != nil, "nil channel")
-		assert.Assert(s.trch != nil, "nil tunnel request channel")
-		tunnel := &sessionTunnel{
-			tunnel: tunnel{
-				sshChan: sshChan,
-				reqs:    reqs,
-			},
-			logger: s.logger.WithPrefix(fmt.Sprintf("tunnel-%d", i)),
+			return err
 		}
 		go tunnel.listen(s.trch)
 
@@ -149,7 +140,16 @@ func (s *Session) Close() (rerr error) {
 
 	teg := errgroup.Group{}
 	for _, t := range s.tunnels {
-		teg.Go(t.Close)
+		teg.Go(func() error {
+			s.logger.Debugf("closing tunnel %s", t.logger.GetPrefix())
+			return t.Close()
+		})
+	}
+	for id, dt := range s.dtunnels {
+		teg.Go(func() error {
+			s.logger.Debugf("closing dedicated tunnel %s", id)
+			return dt.Close()
+		})
 	}
 	return teg.Wait()
 }
@@ -183,6 +183,42 @@ func (s *Session) RoundTrip(r *http.Request) (*http.Response, error) {
 	case err := <-tr.errch:
 		return nil, err
 	}
+}
+
+func (s *Session) openTunnel(logPrefix string) (*sessionTunnel, error) {
+	sshChan, reqs, err := s.sshConn.OpenChannel("tunnel", nil)
+	if err != nil {
+		return nil, fmt.Errorf("tunnel open: %w", err)
+	}
+
+	assert.Assert(sshChan != nil, "nil ssh channel")
+	assert.Assert(reqs != nil, "nil channel")
+	assert.Assert(s.trch != nil, "nil tunnel request channel")
+	tunnel := &sessionTunnel{
+		tunnel: tunnel{
+			sshChan: sshChan,
+			reqs:    reqs,
+		},
+		logger: s.logger.WithPrefix(logPrefix),
+	}
+	return tunnel, nil
+}
+
+func (s *Session) OpenDedicatedTunnel(id string) (*sessionTunnel, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.dtunnels[id]; ok {
+		return nil, fmt.Errorf("tunnel with id '%s' already exists", id)
+	}
+
+	tunnel, err := s.openTunnel(id)
+	if err != nil {
+		return nil, err
+	}
+
+	s.dtunnels[id] = tunnel
+	return tunnel, nil
 }
 
 type sessionTunnel struct {
