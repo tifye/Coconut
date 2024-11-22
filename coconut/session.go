@@ -84,7 +84,7 @@ func (s *Session) Start() error {
 		}
 	}()
 
-	for i := range 1 {
+	for i := range 5 {
 		sshChan, reqs, err := s.sshConn.OpenChannel("tunnel", nil)
 		if err != nil {
 			return fmt.Errorf("tunnel open: %w", err)
