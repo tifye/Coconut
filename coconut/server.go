@@ -491,7 +491,7 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 
 	mux := http.ServeMux{}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		rlogger := logger.With("requestId", reqIdCounter.Add(1), "host", r.Host, "method", r.Method, "path", r.URL.Path)
+		rlogger := logger.With("requestId", "raddr", r.RemoteAddr, reqIdCounter.Add(1), "host", r.Host, "method", r.Method, "path", r.URL.Path)
 
 		upgrade := r.Header.Get("Upgrade")
 		if upgrade == "websocket" {
