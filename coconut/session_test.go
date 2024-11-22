@@ -40,7 +40,7 @@ func Test_Session(t *testing.T) {
 		sshConn, chans, reqs, err := ssh.NewServerConn(conn, &sshConfig)
 		require.Nil(t, err)
 
-		session, err := newSession(conn, sshConn, chans, reqs, log.New(io.Discard))
+		session, err := newSession(conn, sshConn, "subdomain", chans, reqs, log.New(io.Discard))
 		require.Nil(t, err)
 
 		<-clientReady
@@ -170,7 +170,7 @@ func Test_RoundTrip(t *testing.T) {
 	}
 
 	t.Run("sessionTunnel.RoundTrip", func(t *testing.T) {
-		tests := make([]resReqTest, len(reqResTests))
+		tests := make([]resReqTest, 0, len(reqResTests))
 		copy(tests, reqResTests)
 		for _, tt := range tests {
 			mockRWC := &mockReadWriteCloser{
@@ -206,7 +206,7 @@ func Test_RoundTrip(t *testing.T) {
 	})
 
 	t.Run("Session.RoundTrip", func(t *testing.T) {
-		tests := make([]resReqTest, len(reqResTests))
+		tests := make([]resReqTest, 0, len(reqResTests))
 		copy(tests, reqResTests)
 		for _, tt := range reqResTests {
 			mockRWC := &mockReadWriteCloser{

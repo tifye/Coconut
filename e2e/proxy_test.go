@@ -28,7 +28,12 @@ type suite struct {
 	backends []*backend
 }
 
-func newSuite(t *testing.T, numClients int) *suite {
+type suiteConfig struct {
+	numClients    int
+	clientOptions []coconut.ClientOption
+}
+
+func newSuite(t *testing.T, config suiteConfig) *suite {
 	signer, err := ssh.ParsePrivateKey(testutil.GetBytes(t, "../testdata/mino"))
 	require.NoError(t, err)
 
@@ -58,13 +63,18 @@ func newSuite(t *testing.T, numClients int) *suite {
 	backend := newBackend(t, "backend-1", "127.0.0.1:0")
 	backends = append(backends, backend)
 
-	clients := make([]*coconut.Client, 0, numClients)
-	for range numClients {
+	if config.clientOptions == nil {
+		config.clientOptions = make([]coconut.ClientOption, 0, 1)
+	}
+	config.clientOptions = append(config.clientOptions, coconut.WithHostKeyCallback(ssh.InsecureIgnoreHostKey()))
+
+	clients := make([]*coconut.Client, 0, config.numClients)
+	for range config.numClients {
 		client, err := coconut.NewClient(
 			log.New(io.Discard),
 			cln.Addr().String(),
 			backend.Addr,
-			coconut.WithHostKeyCallback(ssh.InsecureIgnoreHostKey()),
+			config.clientOptions...,
 		)
 		require.Nil(t, err)
 
@@ -125,13 +135,17 @@ func (s *suite) teardown(t *testing.T) {
 }
 
 func Test_NothingShouldHappen(t *testing.T) {
-	suite := newSuite(t, 4)
+	suite := newSuite(t, suiteConfig{
+		numClients: 4,
+	})
 	suite.setup(t)
 	defer suite.teardown(t)
 }
 
 func Test_BasicRequest(t *testing.T) {
-	suite := newSuite(t, 1)
+	suite := newSuite(t, suiteConfig{
+		numClients: 1,
+	})
 	suite.setup(t)
 	defer suite.teardown(t)
 

@@ -96,7 +96,7 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 	signer, err := ssh.ParsePrivateKey(testutil.GetBytes(t, "../testdata/mino"))
 	require.Nil(t, err)
 
-	addr := "127.0.0.1:9000"
+	addr := "127.0.0.1:0"
 	server, err := NewServer(
 		log.New(io.Discard),
 		WithClientListenAddr(addr),
@@ -105,15 +105,15 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 	)
 	require.Nil(t, err, "server create err")
 
+	err = server.Start(context.Background())
+	require.Nil(t, err, "server start err")
+
 	client, err := NewClient(
 		log.New(io.Discard),
-		addr,
+		server.clListener.Addr().String(),
 		"",
 	)
 	require.Nil(t, err, "client create err")
-
-	err = server.Start(context.Background())
-	require.Nil(t, err, "server start err")
 
 	err = client.Start()
 	require.Nil(t, err, "client start err")
@@ -146,7 +146,7 @@ func Test_ServerClosesUnderlyNetworkIO(t *testing.T) {
 }
 
 func Test_ServerAcceptsConns(t *testing.T) {
-	addr := "127.0.0.1:9000"
+	addr := "127.0.0.1:0"
 	server, err := NewServer(
 		log.New(io.Discard),
 		WithClientListenAddr(addr),
@@ -161,7 +161,7 @@ func Test_ServerAcceptsConns(t *testing.T) {
 		require.Nil(t, err, "server close err")
 	}()
 
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", server.clListener.Addr().String())
 	require.Nil(t, err, "connection dial err")
 
 	err = conn.Close()
@@ -169,7 +169,7 @@ func Test_ServerAcceptsConns(t *testing.T) {
 }
 
 func Test_ServerStartErr(t *testing.T) {
-	addr := "127.0.0.1:9000"
+	addr := "127.0.0.1:0"
 
 	// block server from using addr
 	testLn, err := net.Listen("tcp", addr)
@@ -178,7 +178,7 @@ func Test_ServerStartErr(t *testing.T) {
 
 	server, err := NewServer(
 		log.New(io.Discard),
-		WithClientListenAddr(addr),
+		WithClientListenAddr(testLn.Addr().String()),
 	)
 	require.Nil(t, err, "server create err")
 
@@ -187,7 +187,7 @@ func Test_ServerStartErr(t *testing.T) {
 }
 
 func Test_ServerDoneWithProxyErr(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:9000")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.Nil(t, err)
 
 	server, err := NewServer(

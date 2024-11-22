@@ -20,8 +20,9 @@ import (
 type Session struct {
 	logger *log.Logger
 
-	conn    net.Conn
-	sshConn *ssh.ServerConn
+	conn      net.Conn
+	sshConn   *ssh.ServerConn
+	subdomain string
 
 	newChans <-chan ssh.NewChannel
 	reqs     <-chan *ssh.Request
@@ -37,6 +38,7 @@ type Session struct {
 func newSession(
 	conn net.Conn,
 	sshConn *ssh.ServerConn,
+	subdomain string,
 	newChans <-chan ssh.NewChannel,
 	reqs <-chan *ssh.Request,
 	logger *log.Logger,
@@ -46,18 +48,20 @@ func newSession(
 	assert.Assert(newChans != nil, "nil new channels channel")
 	assert.Assert(reqs != nil, "nil reqs channel")
 	assert.Assert(logger != nil, "nil logger")
+	assert.Assert(subdomain != "", "zero value subdomain")
 
 	return &Session{
-		logger:   logger,
-		conn:     conn,
-		sshConn:  sshConn,
-		newChans: newChans,
-		reqs:     reqs,
-		closed:   atomic.Bool{},
-		closeWg:  &sync.WaitGroup{},
-		mu:       sync.Mutex{},
-		tunnels:  make([]*sessionTunnel, 0),
-		trch:     make(chan *tunnelRequest),
+		logger:    logger,
+		conn:      conn,
+		sshConn:   sshConn,
+		subdomain: subdomain,
+		newChans:  newChans,
+		reqs:      reqs,
+		closed:    atomic.Bool{},
+		closeWg:   &sync.WaitGroup{},
+		mu:        sync.Mutex{},
+		tunnels:   make([]*sessionTunnel, 0),
+		trch:      make(chan *tunnelRequest),
 	}, nil
 }
 
@@ -68,7 +72,16 @@ func (s *Session) Start() error {
 	s.closeWg.Add(1)
 	go func() {
 		defer s.closeWg.Done()
-		ssh.DiscardRequests(s.reqs)
+		for r := range s.reqs {
+			if r.Type == "subdomain" {
+				assert.Assert(r.WantReply, "should want reply")
+				r.Reply(true, []byte(s.subdomain))
+				continue
+			}
+			if r.WantReply {
+				r.Reply(false, nil)
+			}
+		}
 	}()
 
 	sshChan, reqs, err := s.sshConn.OpenChannel("tunnel", nil)

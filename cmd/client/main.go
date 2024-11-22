@@ -63,6 +63,10 @@ func runClient(ctx context.Context, logger *log.Logger, opts ClientOpts) error {
 		opts.ProxyToAddr,
 		coconut.WithHostKeyCallback(ssh.InsecureIgnoreHostKey()),
 		coconut.WithUser("tifye"),
+		coconut.WithBannerCallback(func(message string) error {
+			logger.Print(message)
+			return nil
+		}),
 	)
 	if err != nil {
 		return fmt.Errorf("client create: %s", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -27,9 +28,20 @@ type clientOptions struct {
 	hostKeyCallback ssh.HostKeyCallback
 	user            string
 	authMethod      ssh.AuthMethod
+	bannerCallback  ssh.BannerCallback
 }
 
 type ClientOption func(options *clientOptions) error
+
+func WithBannerCallback(f ssh.BannerCallback) ClientOption {
+	return func(options *clientOptions) error {
+		if f == nil {
+			return errors.New("nil banner callback func")
+		}
+		options.bannerCallback = f
+		return nil
+	}
+}
 
 func WithDialFunc(f DialFunc) ClientOption {
 	return func(options *clientOptions) error {
@@ -119,6 +131,7 @@ func NewClient(
 		User:            opts.user,
 		Auth:            []ssh.AuthMethod{opts.authMethod},
 		HostKeyCallback: opts.hostKeyCallback,
+		BannerCallback:  func(message string) error { return nil },
 	}
 
 	proxy := newClientProxy(logger.WithPrefix("proxy"), proxyToAddr)
@@ -158,6 +171,10 @@ func clientDefaults(opts *clientOptions) {
 		opts.user = "unkown"
 	}
 
+	if opts.bannerCallback == nil {
+		opts.bannerCallback = func(message string) error { return nil }
+	}
+
 	assert.Assert(opts.authMethod != nil, "nil auth method")
 	assert.Assert(opts.dialFunc != nil, "nil dial func")
 	assert.Assert(opts.hostKeyCallback != nil, "nil host key callback")
@@ -187,6 +204,22 @@ func (c *Client) Start() error {
 		return fmt.Errorf("new ssh client conn: %s", err)
 	}
 	c.sshConn = sshConn
+
+	go func() {
+		ok, payload, err := sshConn.SendRequest("subdomain", true, nil)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				c.logger.Error("conn closed before could receive subdomain")
+			} else {
+				c.logger.Error("failed to retrieve subdomain: %s", err)
+			}
+		}
+		if !ok {
+			c.logger.Error("request for subdomain was rejected")
+			return
+		}
+		c.logger.Printf("subdomain: %s", string(payload))
+	}()
 
 	assert.Assert(c.closeWg != nil, "nil wait group")
 	c.closeWg.Add(3)

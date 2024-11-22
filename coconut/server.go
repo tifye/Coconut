@@ -406,7 +406,7 @@ func (s *Server) processClients() {
 		}
 
 		subdomain := generateSubdomain()
-		sesh, err := newSession(conn, sshConn, chans, reqs, s.logger.WithPrefix(subdomain))
+		sesh, err := newSession(conn, sshConn, subdomain, chans, reqs, s.logger.WithPrefix(subdomain))
 		if err != nil {
 			s.logger.Error("failed to create new sesson", "err", err)
 			continue
