@@ -496,7 +496,7 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 		upgrade := r.Header.Get("Upgrade")
 		if upgrade == "websocket" {
 			w.WriteHeader(http.StatusNotAcceptable)
-			rlogger.Debug("blocking websocket request", "host", r.URL.Host, "path", r.URL.Path)
+			rlogger.Warn("blocking websocket request")
 			return
 		}
 
@@ -504,7 +504,7 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 		sesh, err := discover(subpart)
 		if err != nil {
 			if errors.Is(err, ErrSessionNotFound) {
-				rlogger.Debugf("session '%s' not found", subpart)
+				rlogger.Warnf("session '%s' not found", subpart)
 			} else {
 				rlogger.Error("session discover err")
 			}
