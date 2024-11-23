@@ -15,6 +15,27 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+var (
+	authorizedTestKeys map[string]ssh.PublicKey
+)
+
+func init() {
+	rawTestKeys := []string{
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKX/iTZwvK38XdyAQAs3EYBgwNHN0+ZzWKD3GC96eMmr dematasjoshua@hotmail.com",
+	}
+
+	keys := make(map[string]ssh.PublicKey)
+	for _, rawKey := range rawTestKeys {
+		pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(rawKey))
+		if err != nil {
+			panic(err)
+		}
+		hash := ssh.FingerprintSHA256(pk)
+		keys[hash] = pk
+	}
+	authorizedTestKeys = keys
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -82,7 +103,14 @@ func runServer(ctx context.Context, logger *log.Logger, opts ServerOpts) error {
 		logger.WithPrefix("server"),
 		coconut.WithClientListenAddr(opts.ClientListenAddr),
 		coconut.WithHostKey(signer),
-		coconut.WithNoClientAuth(),
+		coconut.WithPublicKeyCallback(func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			hash := ssh.FingerprintSHA256(key)
+			_, exists := authorizedTestKeys[hash]
+			if !exists {
+				return nil, errors.New("not authorized")
+			}
+			return nil, nil
+		}),
 		coconut.WithProxyAddr(opts.ProxyAddr),
 	)
 	if err != nil {

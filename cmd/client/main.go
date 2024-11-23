@@ -38,6 +38,7 @@ func main() {
 type ClientOpts struct {
 	ServerAddr  string
 	ProxyToAddr string
+	SigningKey  string
 }
 
 func newClientCommand(logger *log.Logger) *cobra.Command {
@@ -51,7 +52,8 @@ func newClientCommand(logger *log.Logger) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.ServerAddr, "server-addr", "127.0.0.1:9000", "Address on which server listens for client connections.")
-	cmd.Flags().StringVarP(&opts.ProxyToAddr, "proxy-addr", "p", "127.0.0.1:3000", "Address to which to proxy request.")
+	cmd.Flags().StringVar(&opts.ProxyToAddr, "proxy-addr", "127.0.0.1:3000", "Address to which to proxy request.")
+	cmd.Flags().StringVar(&opts.SigningKey, "signing-key", "", "The key to use when signing client.")
 
 	return cmd
 }
@@ -62,6 +64,13 @@ func runClient(ctx context.Context, logger *log.Logger, opts ClientOpts) error {
 		opts.ServerAddr,
 		opts.ProxyToAddr,
 		coconut.WithHostKeyCallback(ssh.InsecureIgnoreHostKey()),
+		coconut.WithAuthMethod(ssh.PublicKeysCallback(func() (signers []ssh.Signer, err error) {
+			s, err := getSigner(opts.SigningKey)
+			if err != nil {
+				return nil, err
+			}
+			return []ssh.Signer{s}, nil
+		})),
 		coconut.WithUser("tifye"),
 		coconut.WithBannerCallback(func(message string) error {
 			logger.Print(message)
@@ -98,4 +107,18 @@ func runClient(ctx context.Context, logger *log.Logger, opts ClientOpts) error {
 			return fmt.Errorf("client shutdown: %w", err)
 		}
 	}
+}
+
+func getSigner(spath string) (ssh.Signer, error) {
+	rawKey, err := os.ReadFile(spath)
+	if err != nil {
+		return nil, err
+	}
+
+	signer, err := ssh.ParsePrivateKey([]byte(rawKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key bytes, got: %s", err)
+	}
+
+	return signer, nil
 }
