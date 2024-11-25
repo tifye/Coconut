@@ -401,7 +401,7 @@ func (s *Server) processClients() {
 
 		sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.sshConfig)
 		if err != nil {
-			s.logger.Error("ssh handsake failed", "err", err)
+			s.logger.Error("ssh handshake failed", "err", err)
 			continue
 		}
 
