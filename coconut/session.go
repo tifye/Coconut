@@ -2,6 +2,7 @@ package coconut
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -87,7 +88,7 @@ func (s *Session) Start() error {
 	}()
 
 	for i := range 5 {
-		tunnel, err := s.openTunnel(fmt.Sprintf("tunnel-%d", i))
+		tunnel, err := s.openTunnel(fmt.Sprintf("tunnel-%d", i), "tunnel")
 		if err != nil {
 			return err
 		}
@@ -185,8 +186,8 @@ func (s *Session) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 }
 
-func (s *Session) openTunnel(logPrefix string) (*sessionTunnel, error) {
-	sshChan, reqs, err := s.sshConn.OpenChannel("tunnel", nil)
+func (s *Session) openTunnel(logPrefix string, chanType string) (*sessionTunnel, error) {
+	sshChan, reqs, err := s.sshConn.OpenChannel(chanType, nil)
 	if err != nil {
 		return nil, fmt.Errorf("tunnel open: %w", err)
 	}
@@ -212,7 +213,7 @@ func (s *Session) OpenDedicatedTunnel(id string) (*sessionTunnel, error) {
 		return nil, fmt.Errorf("tunnel with id '%s' already exists", id)
 	}
 
-	tunnel, err := s.openTunnel(id)
+	tunnel, err := s.openTunnel(id, "polled.tunnel")
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +225,19 @@ func (s *Session) OpenDedicatedTunnel(id string) (*sessionTunnel, error) {
 type sessionTunnel struct {
 	tunnel
 	logger *log.Logger
+}
+
+func (st *sessionTunnel) passthrough(ctx context.Context, rw io.ReadWriter) error {
+	eg, _ := errgroup.WithContext(ctx)
+	eg.Go(func() error {
+		_, err := io.Copy(st.sshChan, rw)
+		return err
+	})
+	eg.Go(func() error {
+		_, err := io.Copy(rw, st.sshChan)
+		return err
+	})
+	return eg.Wait()
 }
 
 func (st *sessionTunnel) listen(trch <-chan *tunnelRequest) {

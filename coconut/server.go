@@ -143,6 +143,7 @@ type Server struct {
 	sessions map[string]*Session
 
 	proxy           *http.Server
+	proxyAddr       string
 	proxyListener   net.Listener
 	proxyListenFunc ListenFunc
 }
@@ -198,6 +199,7 @@ func NewServer(logger *log.Logger, options ...ServerOption) (*Server, error) {
 		discover = server.discoverSession
 	}
 	server.proxy = newServerProxy(logger.WithPrefix("proxy"), opts.proxyAddr, discover)
+	server.proxyAddr = opts.proxyAddr
 
 	return server, nil
 }
@@ -283,13 +285,7 @@ func authLogCallback(logger *log.Logger) func(conn ssh.ConnMetadata, method stri
 }
 
 func (s *Server) ProxyAddr() string {
-	s.mu.Lock()
-	proxy := s.proxy
-	s.mu.Unlock()
-	if proxy == nil {
-		return ""
-	}
-	return proxy.Addr
+	return s.proxyAddr
 }
 
 // ListenFunc is a function used to create a net.Listener
@@ -491,14 +487,14 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 
 	mux := http.ServeMux{}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		rlogger := logger.With("requestId", reqIdCounter.Add(1), "raddr", r.RemoteAddr, "host", r.Host, "method", r.Method, "path", r.URL.Path)
-
-		upgrade := r.Header.Get("Upgrade")
-		if upgrade == "websocket" {
-			w.WriteHeader(http.StatusNotAcceptable)
-			rlogger.Warn("blocking websocket request")
-			return
-		}
+		reqId := reqIdCounter.Add(1)
+		rlogger := logger.With(
+			"requestId", reqId,
+			"raddr", r.RemoteAddr,
+			"host", r.Host,
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
 
 		subpart, _, _ := strings.Cut(r.Host, ".")
 		sesh, err := discover(subpart)
@@ -510,6 +506,59 @@ func newServerProxy(logger *log.Logger, addr string, discover discoverSession) *
 			}
 			w.WriteHeader(http.StatusBadGateway)
 			w.Write(nil)
+			return
+		}
+
+		// upgrade := r.Header.Get("Upgrade")
+		// if upgrade == "websocket" {
+		// 	w.WriteHeader(http.StatusNotAcceptable)
+		// 	rlogger.Warn("blocking websocket request")
+		// 	return
+		// }
+		upgrade := r.Header.Get("Upgrade")
+		if upgrade == "websocket" {
+
+			rlogger = rlogger.With(
+				"origin", r.Header.Get("Origin"),
+				"Sec-WebSocket-Protocol", r.Header.Get("Sec-WebSocket-Protocol"),
+				"Sec-WebSocket-Version", r.Header.Get("Sec-WebSocket-Version"),
+			)
+
+			t, err := sesh.OpenDedicatedTunnel(fmt.Sprintf("%d", reqId))
+			if err != nil {
+				rlogger.Errorf("failed to open dedicated tunnel for websocket connection: %s", err)
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			defer t.Close()
+			rlogger.Debug("dedicated tunnel opened for websocket connection")
+
+			req := r.Clone(r.Context())
+			err = req.Write(t.sshChan)
+			if err != nil {
+				rlogger.Errorf("ws request write err: %s", err)
+				return
+			}
+
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				rlogger.Error("request hijacking unsupported")
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				rlogger.Error("failed to hijack request connection")
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			rlogger.Debug("hijacked connection")
+
+			err = t.passthrough(req.Context(), conn)
+			if err != nil {
+				rlogger.Errorf("tunnel passthrough: %s", err)
+			}
+
 			return
 		}
 
