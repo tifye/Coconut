@@ -22,6 +22,7 @@ var (
 func init() {
 	rawTestKeys := []string{
 		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKX/iTZwvK38XdyAQAs3EYBgwNHN0+ZzWKD3GC96eMmr dematasjoshua@hotmail.com",
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFcWXKvdMek6mamQu59ygy9ugCk0O3BtBWUUCI3g2uYp",
 	}
 
 	keys := make(map[string]ssh.PublicKey)
