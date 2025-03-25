@@ -81,6 +81,7 @@ func Test_ServerClientSessions(t *testing.T) {
 
 	t.Run("nothing should happen", func(t *testing.T) {
 		_, teardown := setup(t, 10)
+		time.Sleep(time.Second)
 		defer teardown()
 	})
 

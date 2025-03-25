@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -262,14 +263,22 @@ func (c *Client) Close() (rerr error) {
 	for i, t := range c.tunnels {
 		eg.Go(func() error {
 			c.logger.Debugf("closing tunnel %d", i)
-			return t.Close()
+			err := t.Close()
+			if err != nil {
+				return fmt.Errorf("tunnel close: %s", err)
+			}
+			return nil
 		})
 	}
 	c.mu.Unlock()
 
 	eg.Go(func() error {
 		c.logger.Debug("closing proxy")
-		return c.proxy.Shutdown(context.Background())
+		err := c.proxy.Shutdown(context.Background())
+		if err != nil {
+			return fmt.Errorf("proxy shutdown: %s", err)
+		}
+		return nil
 	})
 
 	eg.Go(func() error {
@@ -278,27 +287,92 @@ func (c *Client) Close() (rerr error) {
 		if errors.Is(err, net.ErrClosed) || err == nil {
 			return nil
 		}
-		return err
+		return fmt.Errorf("ssh conn close: %s", err)
 	})
 
 	return eg.Wait()
 }
 
 func newClientProxy(logger *log.Logger, addr string) *http.Server {
-	s := &http.Server{
-		Handler: &httputil.ReverseProxy{
-			Rewrite: func(r *httputil.ProxyRequest) {
-				r.SetXForwarded()
-				uri, err := url.Parse("http://" + addr)
-				assert.Assert(err == nil, "addr parse")
-				logger.Debug("rewriting", "host", r.In.URL.Host, "method", r.In.Method, "path", r.In.URL.Path)
-				r.SetURL(uri)
-			},
-			ModifyResponse: func(r *http.Response) error {
-				logger.Debug("routing back response", "host", r.Request.URL.Host, "method", r.Request.Method, "path", r.Request.URL.Path)
-				return nil
-			},
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetXForwarded()
+			uri, err := url.Parse("http://" + addr)
+			assert.Assert(err == nil, "addr parse")
+			logger.Debug("rewriting", "host", r.In.URL.Host, "method", r.In.Method, "path", r.In.URL.Path)
+			r.SetURL(uri)
 		},
+		ModifyResponse: func(r *http.Response) error {
+			logger.Debug("routing back response", "host", r.Request.URL.Host, "method", r.Request.Method, "path", r.Request.URL.Path)
+			return nil
+		},
+	}
+
+	mux := &http.ServeMux{}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		upgradeH := strings.ToLower(r.Header.Get("Upgrade"))
+		connectH := strings.ToLower(r.Header.Get("Connection"))
+		if !strings.Contains(connectH, "upgrade") || !strings.Contains(upgradeH, "websocket") {
+			proxy.ServeHTTP(w, r)
+			return
+		}
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			logger.Error("hijacking not supported")
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		go func() {
+			_, err := io.ReadAll(r.Body)
+			if err != nil {
+				logger.Error("read all: %s", err)
+				return
+			}
+		}()
+		lconn, _, err := hj.Hijack()
+		if err != nil {
+			logger.Error("there is some error here")
+			logger.Error(err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		logger.Debug("hijacked connection")
+
+		rconn, err := net.Dial("tcp", addr)
+		if err != nil {
+			logger.Error(err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		defer rconn.Close()
+
+		req := r.Clone(r.Context())
+		req.Host = addr
+		err = req.Write(rconn)
+		if err != nil {
+			logger.Error(err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+
+		eg, _ := errgroup.WithContext(r.Context())
+		eg.Go(func() error {
+			_, err := io.Copy(lconn, rconn)
+			return err
+		})
+		eg.Go(func() error {
+			_, err := io.Copy(rconn, lconn)
+			return err
+		})
+		err = eg.Wait()
+		if err != nil {
+			logger.Error(err)
+		}
+	})
+
+	s := &http.Server{
+		Handler: mux,
 		ConnState: func(conn net.Conn, state http.ConnState) {
 			logger.Debug("Conn state changed", "state", state.String())
 		},
@@ -310,7 +384,7 @@ func newClientProxy(logger *log.Logger, addr string) *http.Server {
 func (c *Client) processNewChannels(chans <-chan ssh.NewChannel) {
 	assert.Assert(chans != nil, "nil channel")
 	for nc := range chans {
-		if nc.ChannelType() != "tunnel" {
+		if !strings.HasSuffix(nc.ChannelType(), "tunnel") {
 			c.logger.Debug("non-tunnel type new channel request")
 
 			err := nc.Reject(ssh.UnknownChannelType, "only accepts tunnel type channels")
@@ -328,16 +402,20 @@ func (c *Client) processNewChannels(chans <-chan ssh.NewChannel) {
 		}
 		assert.Assert(sshChan != nil, "nil ssh channel")
 		assert.Assert(reqs != nil, "nil channel")
+
+		var conn net.Conn
+		if strings.HasPrefix(nc.ChannelType(), "polled") {
+			conn = newPolledNetSSHChannelConn(sshChan, c.conn.LocalAddr(), c.conn.RemoteAddr())
+		} else {
+			conn = newNetSSHChannelConn(sshChan, c.conn.LocalAddr(), c.conn.RemoteAddr())
+		}
+
 		tunnel := &clientTunnel{
 			tunnel: tunnel{
 				sshChan: sshChan,
 				reqs:    reqs,
 			},
-			conn: netSSHChannelConn{
-				laddr:   c.conn.LocalAddr(),
-				raddr:   c.conn.RemoteAddr(),
-				Channel: sshChan,
-			},
+			conn: conn,
 		}
 
 		assert.Assert(c.tunnels != nil, "nil tunnels")
@@ -354,25 +432,155 @@ type clientTunnel struct {
 	conn net.Conn
 }
 
+type readResult struct {
+	n    int
+	err  error
+	data []byte
+}
+
+type polledNetSSHChannelConn struct {
+	sshChan      ssh.Channel
+	laddr        net.Addr
+	raddr        net.Addr
+	readch       chan readResult
+	readctx      context.Context
+	readCancel   context.CancelCauseFunc
+	readDeadline time.Time
+	rwmu         sync.RWMutex
+}
+
+func newPolledNetSSHChannelConn(c ssh.Channel, laddr, raddr net.Addr) *polledNetSSHChannelConn {
+	readctx, cancel := context.WithCancelCause(context.Background())
+	conn := &polledNetSSHChannelConn{
+		laddr:   laddr,
+		raddr:   raddr,
+		sshChan: c,
+
+		readch:       make(chan readResult),
+		readctx:      readctx,
+		readCancel:   cancel,
+		readDeadline: time.Time{},
+
+		rwmu: sync.RWMutex{},
+	}
+	go conn.poll()
+	go conn.beginRead()
+	return conn
+}
+
+func (c *polledNetSSHChannelConn) poll() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	for t := range ticker.C {
+		c.rwmu.RLock()
+		rd := c.readDeadline
+		c.rwmu.RUnlock()
+
+		if rd.IsZero() {
+			continue
+		}
+
+		if rd.Before(t) {
+			c.readCancel(context.DeadlineExceeded)
+		}
+	}
+}
+
+func (c *polledNetSSHChannelConn) beginRead() {
+	buf := make([]byte, 1024)
+	for {
+		n, err := c.sshChan.Read(buf)
+		if err != nil {
+			c.readch <- readResult{err: err}
+			return
+		}
+
+		if n > 0 {
+			tmp := make([]byte, n)
+			copy(tmp, buf[:n])
+			c.readch <- readResult{data: tmp, n: n}
+		}
+	}
+}
+
+func (c *polledNetSSHChannelConn) LocalAddr() net.Addr {
+	return c.laddr
+}
+
+func (c *polledNetSSHChannelConn) RemoteAddr() net.Addr {
+	return c.raddr
+}
+
+func (c *polledNetSSHChannelConn) SetDeadline(t time.Time) error {
+	c.SetReadDeadline(t)
+	return nil
+}
+
+func (c *polledNetSSHChannelConn) SetReadDeadline(t time.Time) error {
+	c.rwmu.Lock()
+	c.readDeadline = t
+	c.rwmu.Unlock()
+	return nil
+}
+
+func (c *polledNetSSHChannelConn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *polledNetSSHChannelConn) Read(buf []byte) (int, error) {
+	select {
+	case res, ok := <-c.readch:
+		if !ok {
+			return 0, net.ErrClosed
+		}
+		if res.err != nil {
+			return 0, res.err
+		}
+		copy(buf, res.data)
+		return res.n, nil
+	case <-c.readctx.Done():
+		return 0, c.readctx.Err()
+	}
+}
+
+func (c *polledNetSSHChannelConn) Write(data []byte) (int, error) {
+	return c.sshChan.Write(data)
+}
+
+func (c *polledNetSSHChannelConn) Close() error {
+	return c.sshChan.Close()
+}
+
 type netSSHChannelConn struct {
 	ssh.Channel
 	laddr net.Addr
 	raddr net.Addr
 }
 
-func (c netSSHChannelConn) LocalAddr() net.Addr {
+func newNetSSHChannelConn(c ssh.Channel, laddr, raddr net.Addr) *netSSHChannelConn {
+	return &netSSHChannelConn{
+		laddr:   laddr,
+		raddr:   raddr,
+		Channel: c,
+	}
+}
+
+func (c *netSSHChannelConn) LocalAddr() net.Addr {
 	return c.laddr
 }
-func (c netSSHChannelConn) RemoteAddr() net.Addr {
+
+func (c *netSSHChannelConn) RemoteAddr() net.Addr {
 	return c.raddr
 }
-func (c netSSHChannelConn) SetDeadline(t time.Time) error {
+
+func (c *netSSHChannelConn) SetDeadline(t time.Time) error {
 	return nil
 }
-func (c netSSHChannelConn) SetReadDeadline(t time.Time) error {
+
+func (c *netSSHChannelConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
-func (c netSSHChannelConn) SetWriteDeadline(t time.Time) error {
+
+func (c *netSSHChannelConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 

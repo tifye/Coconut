@@ -50,7 +50,7 @@ func Test_Session(t *testing.T) {
 			require.Nil(t, serr)
 
 			cerr := client.Close()
-			require.Nil(t, cerr)
+			require.NoError(t, cerr)
 		}
 	}
 
@@ -98,13 +98,13 @@ func Test_Session(t *testing.T) {
 		client, session, _ := setup(t)
 
 		err := session.Start()
-		require.Nil(t, err)
+		require.NoError(t, err)
 
 		err = client.Close()
-		require.Nil(t, err)
+		require.NoError(t, err)
 
 		err = session.Close()
-		require.Nil(t, err)
+		require.NoError(t, err)
 	})
 }
 
